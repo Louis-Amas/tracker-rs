@@ -3026,6 +3026,7 @@ dependencies = [
  "dotenv",
  "ethers",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
