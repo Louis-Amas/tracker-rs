@@ -2816,7 +2816,7 @@ dependencies = [
  "ethers",
  "tokio",
  "tracing",
- "tracker-rs",
+ "tracker",
 ]
 
 [[package]]
@@ -3031,7 +3031,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "tracker-rs"
+name = "tracker"
 version = "0.0.1"
 dependencies = [
  "dotenv",

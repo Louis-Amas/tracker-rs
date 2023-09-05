@@ -27,7 +27,7 @@ async fn get_block(provider: Provider<Http>, number: U64) -> Result<tracker::tra
     let block = result.map_err(Error::ProviderError)?;
 
     let blck = block.ok_or(Error::Error())?;
-    Ok(tracker::lib::Block{ 
+    Ok(tracker::tracker::Block{ 
         hash: blck.hash.ok_or(Error::Error())?,
         parent_hash: blck.parent_hash,
         number: blck.number.ok_or(Error::Error())?,

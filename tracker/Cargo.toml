@@ -1,5 +1,5 @@
 [package]
-name = "tracker-rs"
+name = "tracker"
 version = "0.0.1" 
 edition = "2021"
 authors = ["Louis Amas <amaslouis@protonmail.com>"]
