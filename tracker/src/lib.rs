@@ -39,7 +39,7 @@ pub mod tracker {
         pub batch_size: u32,
     }
 
-    pub struct BlockCache<Provider: RpcProvider<TxHash>> {
+    pub struct BlockCache<Provider: BlockProvider<TxHash>> {
         pub rpc_provider: Provider,
 
         pub options: ChainCacheOptions,
@@ -63,8 +63,10 @@ pub mod tracker {
         AtBlock(BlockIdentifier),
     }
 
-    pub trait RpcProvider<TX> {
+    pub trait BlockProvider<TX> {
         fn get_block(&self, number: BlockIdentifier) -> Result<Block<TX>, String>;
+
+        fn get_block_batch(&self, from: BlockIdentifier, to: BlockIdentifier) -> Result<Vec<Block<TX>>, String>;
 
         fn get_logs(&self, filter: Filter) -> Result<Vec<Log>, String>;
     }
@@ -77,7 +79,7 @@ pub mod tracker {
         pub topics: [Option<Topic>; 4],
     }
 
-    impl<Provider: RpcProvider<TxHash>> BlockCache<Provider> {
+    impl<Provider: BlockProvider<TxHash>> BlockCache<Provider> {
         fn add_block(&mut self, block: Block<TxHash>) {
             event!(Level::INFO, "add_block {}", block);
             self.last_block = Some(block);
