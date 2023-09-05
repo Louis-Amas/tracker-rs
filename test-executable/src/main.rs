@@ -3,8 +3,7 @@ use dotenv;
 use ethers::providers::{Provider, Http, Middleware, ProviderError};
 use ethers::core::types::{BlockNumber, BlockId, U64, TxHash};
 
-mod types;
-mod tracker;
+extern crate tracker;
 
 #[derive(Debug)]
 enum Error {
@@ -22,14 +21,13 @@ impl std::fmt::Display for Error {
     }
 }
 
-async fn get_block(provider: Provider<Http>, number: U64) -> Result<types::block::Block<TxHash>, Error> {
+async fn get_block(provider: Provider<Http>, number: U64) -> Result<tracker::tracker::Block<TxHash>, Error> {
     let result = provider.get_block(BlockId::Number(BlockNumber::Number(number))).await;
 
     let block = result.map_err(Error::ProviderError)?;
 
     let blck = block.ok_or(Error::Error())?;
-
-    Ok(types::block::Block{ 
+    Ok(tracker::lib::Block{ 
         hash: blck.hash.ok_or(Error::Error())?,
         parent_hash: blck.parent_hash,
         number: blck.number.ok_or(Error::Error())?,

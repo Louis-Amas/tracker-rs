@@ -2809,6 +2809,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "test-executable"
+version = "0.0.1"
+dependencies = [
+ "dotenv",
+ "ethers",
+ "tokio",
+ "tracing",
+ "tracker-rs",
+]
+
+[[package]]
 name = "thiserror"
 version = "1.0.44"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3021,7 +3032,7 @@ dependencies = [
 
 [[package]]
 name = "tracker-rs"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "dotenv",
  "ethers",
