@@ -7,6 +7,15 @@ pub mod tracker {
     use ethers::{core::types::TxHash, types::{U64, H64, Bloom, H256, ValueOrArray, Address, Topic, Log}};
 
     #[derive(Debug, Default, Clone, PartialEq, Eq)]
+    pub struct MinimalBlock {
+        pub hash: H256,
+
+        pub parent_hash: H256,
+
+        pub number: U64,
+    }
+
+    #[derive(Debug, Default, Clone, PartialEq, Eq)]
     pub struct Block<TX> {
 
         pub hash: H256,
@@ -37,16 +46,18 @@ pub mod tracker {
         pub retry_delay_ms: u32,
 
         pub batch_size: u32,
+
+        pub block_back_count: u32,
     }
 
-    pub struct BlockCache<Provider: BlockProvider<TxHash>> {
+    pub struct BlockCache<'a, Provider: BlockProvider<TxHash>> {
         pub rpc_provider: Provider,
 
         pub options: ChainCacheOptions,
 
-        pub last_block: Option<Block<TxHash>>,
+        pub last_block: Option<&'a Block<TxHash>>,
 
-        pub blocks_map: HashMap<U64, Block<TxHash>>,
+        pub blocks_map: HashMap<U64, &'a Block<TxHash>>,
     }
 
     pub enum BlockIdentifier {
@@ -66,7 +77,7 @@ pub mod tracker {
     pub trait BlockProvider<TX> {
         fn get_block(&self, number: BlockIdentifier) -> Result<Block<TX>, String>;
 
-        fn get_block_batch(&self, from: BlockIdentifier, to: BlockIdentifier) -> Result<Vec<Block<TX>>, String>;
+        fn get_minimal_block_batch(&self, from: BlockIdentifier, to: BlockIdentifier) -> Result<Vec<MinimalBlock>, String>;
 
         fn get_logs(&self, filter: Filter) -> Result<Vec<Log>, String>;
     }
@@ -79,21 +90,30 @@ pub mod tracker {
         pub topics: [Option<Topic>; 4],
     }
 
-    impl<Provider: BlockProvider<TxHash>> BlockCache<Provider> {
-        fn add_block(&mut self, block: Block<TxHash>) {
+    pub struct HandleBlockResult {
+        block: Block<TxHash>,
+
+        logs: Vec<Log>,
+
+        rollback_block: Option<Block<TxHash>>,
+    }
+
+    impl<'a, Provider: BlockProvider<TxHash>> BlockCache<'a, Provider> {
+        fn add_block(&mut self, block: &'a Block<TxHash>) {
             event!(Level::INFO, "add_block {}", block);
             self.last_block = Some(block);
+            self.blocks_map.insert(block.number, block);
         }
 
-        fn initialize(&mut self, block: Block<TxHash>) -> Option<String> {
+        fn initialize(&mut self, block: &'a Block<TxHash>) -> Option<String> {
             let rpc_block_result = self.rpc_provider.get_block(BlockIdentifier::Hash(block.hash));
 
             match rpc_block_result {
                 Err(error) => {
                     Some(error)
                 }
-                Ok(block) => {
-                    self.add_block(block);
+                Ok(_block) => {
+                    self.add_block(&block);
                     None
                 },
             }
@@ -104,8 +124,19 @@ pub mod tracker {
                 return Err("Block cache too small can't find ancestor".to_string());
             }
 
-            let last_block = self.last_block.unwrap();
-            self.rpc_provider.get_block(BlockIdentifier::Number(last_block.number - 1))
+            let last_block = self.last_block.ok_or("No last block available".to_string())?;
+            let min_block_back = std::cmp::min(self.blocks_map.len() as u32, self.options.block_back_count);
+            let from = last_block.number - min_block_back;
+            let batch = self.rpc_provider.get_minimal_block_batch(BlockIdentifier::Number(from), BlockIdentifier::Number(last_block.number))?;
+
+            for block in batch.iter().rev() {
+                let cached_block = self.blocks_map.get(&block.number).ok_or("Missing cached block".to_string())?;
+                if cached_block.hash == block.hash {
+                    return Ok(self.rpc_provider.get_block(BlockIdentifier::Hash(block.hash))?);
+                }
+            }
+
+            Err("Did not find common ancestor".to_string())
         }
 
         fn handle_block(&mut self, block: Block<TxHash>) {
