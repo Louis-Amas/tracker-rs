@@ -101,18 +101,16 @@ pub mod tracker {
             self.blocks_map.insert(block.number.as_u64(), block);
         }
 
-        async fn initialize(&mut self, block: &'a Block<TxHash>) -> Option<String> {
-            let rpc_block_result = self.rpc_provider.get_block(BlockIdentifier::Hash(block.hash)).await;
+        async fn initialize(&mut self, block: &'a Block<TxHash>) -> Result<&'a Block<TxHash>, String> {
+            let rpc_block = self.rpc_provider.get_block(BlockIdentifier::Hash(block.hash)).await?;
 
-            match rpc_block_result {
-                Err(error) => {
-                    Some(error)
-                }
-                Ok(_block) => {
-                    self.add_block(&block);
-                    None
-                },
+            if rpc_block.hash != block.hash {
+                return Err("Rpc block hash not equal to the one provided to initialize".to_string());
             }
+
+            self.add_block(block);
+
+            Ok(block)
         }
 
         async fn find_common_ancestor(&self) -> Result<&'a Block<TxHash>, String> {
