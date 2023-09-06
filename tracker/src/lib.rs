@@ -29,11 +29,15 @@ pub mod tracker {
     impl fmt::Display for Block<TxHash> {
 
         fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-            write!(f, "(hash: {}, parent_hash: {}, number: {}, transactions_length: {}, nonce: {}, logs_bloom: {})", 
+            write!(f, "(hash: {}, parent_hash: {}, number: {}, transactions_length: {:?}, nonce: {}, logs_bloom: {})", 
                 self.hash, 
                 self.parent_hash, 
                 self.number, 
-                "tx", self.nonce.unwrap_or(H64::zero()), self.logs_bloom.unwrap_or(Bloom::zero()))
+                self.transactions.as_ref()
+                    .map(|tx| tx.len().to_string())
+                    .unwrap_or_else(|| "No transactions".to_string()), 
+                self.nonce.as_ref().map(|nonce| nonce.to_string()).unwrap_or("No nonce".to_string()), 
+                self.logs_bloom.as_ref().map(|bloom| bloom.to_string()).unwrap_or("No bloom".to_string()))
         }
     }
 
