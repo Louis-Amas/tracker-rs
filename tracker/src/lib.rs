@@ -6,13 +6,12 @@ pub mod tracker {
 
     use core::fmt;
     use tracing::{event, Level};
-    use std::collections::HashMap;
+    use std::{collections::HashMap, fmt::Debug};
 
     use ethers::{core::types::TxHash, types::{U64, H64, Bloom, H256, ValueOrArray, Address, Topic, Log}};
 
     #[derive(Debug, Default, Clone, PartialEq, Eq)]
     pub struct Block<TX> {
-
         pub hash: H256,
 
         pub parent_hash: H256,
@@ -86,12 +85,12 @@ pub mod tracker {
     }
 
     #[async_trait]
-    pub trait BlockProvider<TX> {
-        async fn get_block(&self, number: BlockIdentifier) -> Result<Block<TX>, String>;
+    pub trait BlockProvider<TX>: Debug + Send + Sync {
+        async fn get_block(&self, number: BlockIdentifier) -> Result<&Block<TX>, String>;
 
-        async fn get_minimal_block_batch<'a>(&self, from: BlockIdentifier, to: BlockIdentifier) -> Result<&'a Vec<Block<TX>>, String>;
+        async fn get_minimal_block_batch<'a>(&self, from: BlockIdentifier, to: BlockIdentifier) -> Result<Vec<&'a Block<TX>>, String>;
 
-        async fn get_logs(&self, filter_block: FilterBlockOption, filter: &Filter) -> Result<Vec<Log>, String>;
+        async fn get_logs<'a>(&self, filter_block: FilterBlockOption, filter: &Filter) -> Result<Vec<&'a Log>, String>;
     }
 
     impl<'a, Provider: BlockProvider<TxHash>> BlockCache<'a, Provider> {
@@ -133,10 +132,10 @@ pub mod tracker {
             Err("Did not find common ancestor".to_string())
         }
 
-        async fn handle_batch_block(&mut self, from: &Block<TxHash>, to: &Block<TxHash>, fill_cache: bool) -> Result<Vec<Log>, String> {
+        async fn handle_batch_block(&mut self, from: &Block<TxHash>, to: &Block<TxHash>, fill_cache: bool) -> Result<Vec<&Log>, String> {
             let mut from_number = from.number.as_u64();
             let mut to_number = std::cmp::min(from_number + self.options.batch_size as u64, to.number.as_u64());
-            let mut aggregated_logs: Vec<Log> = Vec::new();
+            let mut aggregated_logs: Vec<&Log> = Vec::new();
             loop {
                 let logs_future = self.rpc_provider
                     .get_logs(
@@ -148,16 +147,12 @@ pub mod tracker {
                     let blocks_batch_future = self.rpc_provider
                         .get_minimal_block_batch(BlockIdentifier::Number(from_number), BlockIdentifier::Number(to_number));
 
-                    let (mut logs, blocks) = try_join!(logs_future, blocks_batch_future)?;
-                    for block in blocks.iter() {
-                        self.blocks_map.insert(block.number.as_u64(), block);
-                    }
+                    let (logs, blocks) = try_join!(logs_future, blocks_batch_future)?;
 
-                    aggregated_logs.append(&mut logs);
-
+                    let _ = blocks.iter().map(|block| self.blocks_map.insert(block.number.as_u64(), block));
+                    logs.iter().for_each(|log| aggregated_logs.push(log));
                 } else {
-                    let mut logs = logs_future.await?;
-                    aggregated_logs.append(&mut logs);
+                    logs_future.await?.iter().for_each(|log| aggregated_logs.push(log));
                 }
  
                 from_number = to.number.as_u64();
@@ -171,7 +166,7 @@ pub mod tracker {
             Ok(aggregated_logs)
         }
 
-        async fn handle_block(&mut self, block: &'a Block<TxHash>) -> Result<(&Block<TxHash>, Option<&Block<TxHash>>, Vec<Log>), String> {
+        async fn handle_block(&mut self, block: &'a Block<TxHash>) -> Result<(&Block<TxHash>, Option<&Block<TxHash>>, Vec<&Log>), String> {
             let last_block = self.last_block.ok_or("Missing last block")?;
             let mut rollback_block: Option<&Block<TxHash>> = None;
             if last_block.hash != block.parent_hash {
@@ -194,5 +189,41 @@ pub mod tracker {
 
             Ok((&block, rollback_block, logs))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tracker::*;
+    use async_trait::async_trait;
+    use ethers::types::{TxHash, Log};
+
+    #[derive(Clone, Debug)]
+    struct MockRpcProvider<TX> {
+        latest: Block<TX>,
+    }
+
+    #[async_trait]
+    impl BlockProvider<TxHash> for MockRpcProvider<TxHash> {
+
+        async fn get_block(&self, number: BlockIdentifier) -> Result<&Block<TxHash>, String> {
+            Ok(&self.latest)
+        }
+
+        async fn get_minimal_block_batch<'a>(&self, from: BlockIdentifier, to: BlockIdentifier) -> Result<Vec<&'a Block<TxHash>>, String> {
+            let vec: Vec<&Block<TxHash>> = Vec::new();
+            Ok(vec)
+        }
+
+        async fn get_logs<'a>(&self, filter_block: FilterBlockOption, filter: &Filter) -> Result<Vec<&'a Log>, String> {
+            let vec: Vec<&Log> = Vec::new();
+            Ok(vec)
+        }
+
+    }
+
+    #[test]
+    fn test() {
+        assert_eq!(true, true);
     }
 }
