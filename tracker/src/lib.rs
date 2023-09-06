@@ -1,22 +1,14 @@
 #![allow(dead_code)]
 
-mod utils;
-
 pub mod tracker {
+    use async_trait::async_trait;
+    use tokio::try_join;
+
     use core::fmt;
     use tracing::{event, Level};
     use std::collections::HashMap;
 
     use ethers::{core::types::TxHash, types::{U64, H64, Bloom, H256, ValueOrArray, Address, Topic, Log}};
-
-    #[derive(Debug, Default, Clone, PartialEq, Eq)]
-    pub struct MinimalBlock {
-        pub hash: H256,
-
-        pub parent_hash: H256,
-
-        pub number: U64,
-    }
 
     #[derive(Debug, Default, Clone, PartialEq, Eq)]
     pub struct Block<TX> {
@@ -27,17 +19,21 @@ pub mod tracker {
 
         pub number: U64,
 
-        pub transactions: Vec<TX>,
+        pub transactions: Option<Vec<TX>>,
 
-        pub nonce: H64, 
+        pub nonce: Option<H64>, 
 
-        pub logs_bloom: Bloom,
+        pub logs_bloom: Option<Bloom>,
     }
 
     impl fmt::Display for Block<TxHash> {
 
         fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-            write!(f, "(hash: {}, parent_hash: {}, number: {}, transactions_length: {}, nonce: {}, logs_bloom: {})", self.hash, self.parent_hash, self.number, self.transactions.len(), self.nonce, self.logs_bloom)
+            write!(f, "(hash: {}, parent_hash: {}, number: {}, transactions_length: {}, nonce: {}, logs_bloom: {})", 
+                self.hash, 
+                self.parent_hash, 
+                self.number, 
+                "tx", self.nonce.unwrap_or(H64::zero()), self.logs_bloom.unwrap_or(Bloom::zero()))
         }
     }
 
@@ -85,12 +81,13 @@ pub mod tracker {
         AtBlock(BlockIdentifier),
     }
 
+    #[async_trait]
     pub trait BlockProvider<TX> {
-        fn get_block(&self, number: BlockIdentifier) -> Result<Block<TX>, String>;
+        async fn get_block(&self, number: BlockIdentifier) -> Result<Block<TX>, String>;
 
-        fn get_minimal_block_batch(&self, from: BlockIdentifier, to: BlockIdentifier) -> Result<Vec<MinimalBlock>, String>;
+        async fn get_minimal_block_batch<'a>(&self, from: BlockIdentifier, to: BlockIdentifier) -> Result<&'a Vec<Block<TX>>, String>;
 
-        fn get_logs(&self, filter_block: FilterBlockOption, filter: &Filter) -> Result<Vec<Log>, String>;
+        async fn get_logs(&self, filter_block: FilterBlockOption, filter: &Filter) -> Result<Vec<Log>, String>;
     }
 
     impl<'a, Provider: BlockProvider<TxHash>> BlockCache<'a, Provider> {
@@ -100,8 +97,8 @@ pub mod tracker {
             self.blocks_map.insert(block.number.as_u64(), block);
         }
 
-        fn initialize(&mut self, block: &'a Block<TxHash>) -> Option<String> {
-            let rpc_block_result = self.rpc_provider.get_block(BlockIdentifier::Hash(block.hash));
+        async fn initialize(&mut self, block: &'a Block<TxHash>) -> Option<String> {
+            let rpc_block_result = self.rpc_provider.get_block(BlockIdentifier::Hash(block.hash)).await;
 
             match rpc_block_result {
                 Err(error) => {
@@ -114,7 +111,7 @@ pub mod tracker {
             }
         }
 
-        fn find_common_ancestor(&self) -> Result<&'a Block<TxHash>, String> {
+        async fn find_common_ancestor(&self) -> Result<&'a Block<TxHash>, String> {
             if self.blocks_map.len() < 2 {
                 return Err("Block cache too small can't find ancestor".to_string());
             }
@@ -122,7 +119,7 @@ pub mod tracker {
             let last_block = self.last_block.ok_or("No last block available".to_string())?;
             let min_block_back = std::cmp::min(self.blocks_map.len() as u32, self.options.block_back_count);
             let from = last_block.number - min_block_back;
-            let batch = self.rpc_provider.get_minimal_block_batch(BlockIdentifier::Number(from.as_u64()), BlockIdentifier::Number(last_block.number.as_u64() - 1))?;
+            let batch = self.rpc_provider.get_minimal_block_batch(BlockIdentifier::Number(from.as_u64()), BlockIdentifier::Number(last_block.number.as_u64() - 1)).await?;
 
             for block in batch.iter().rev() {
                 let cached_block = self.blocks_map.get(&block.number.as_u64()).ok_or("Missing cached block".to_string())?;
@@ -134,42 +131,51 @@ pub mod tracker {
             Err("Did not find common ancestor".to_string())
         }
 
-        fn handle_batch_block(&mut self, from: &Block<TxHash>, to: &Block<TxHash>, validate_block_exist: bool) -> Result<Vec<Log>, String> {
+        async fn handle_batch_block(&mut self, from: &Block<TxHash>, to: &Block<TxHash>, fill_cache: bool) -> Result<Vec<Log>, String> {
             let mut from_number = from.number.as_u64();
             let mut to_number = std::cmp::min(from_number + self.options.batch_size as u64, to.number.as_u64());
-
             let mut aggregated_logs: Vec<Log> = Vec::new();
-            while from_number == to.number.as_u64() {
-                let mut logs = self.rpc_provider
+            loop {
+                let logs_future = self.rpc_provider
                     .get_logs(
                         FilterBlockOption::Range { 
                             from_identifier: BlockIdentifier::Number(from_number), 
-                            to_identifier: BlockIdentifier::Number(to_number) }, &self.options.filter)?;
+                            to_identifier: BlockIdentifier::Number(to_number) }, &self.options.filter);
 
-                if validate_block_exist {
-                    if let Some(log) = logs.last() {
-                        self.rpc_provider.get_block(BlockIdentifier::Hash(log.block_hash.unwrap()))
-                            .map_err(|_err| "Block hash received in log does not exist")?;
+                if fill_cache {
+                    let blocks_batch_future = self.rpc_provider
+                        .get_minimal_block_batch(BlockIdentifier::Number(from_number), BlockIdentifier::Number(to_number));
+
+                    let (mut logs, blocks) = try_join!(logs_future, blocks_batch_future)?;
+                    for block in blocks.iter() {
+                        self.blocks_map.insert(block.number.as_u64(), block);
                     }
-                }
 
-                aggregated_logs.append(&mut logs);
+                    aggregated_logs.append(&mut logs);
+
+                } else {
+                    let mut logs = logs_future.await?;
+                    aggregated_logs.append(&mut logs);
+                }
  
                 from_number = to.number.as_u64();
                 to_number = std::cmp::min(from_number + self.options.batch_size as u64, to.number.as_u64()) ;
+
+                if from_number == to.number.as_u64() {
+                    break;
+                }
             }
 
             Ok(aggregated_logs)
         }
 
-
-        fn handle_block(&mut self, block: &'a Block<TxHash>) -> Result<(&Block<TxHash>, Option<&Block<TxHash>>, Vec<Log>), String> {
+        async fn handle_block(&mut self, block: &'a Block<TxHash>) -> Result<(&Block<TxHash>, Option<&Block<TxHash>>, Vec<Log>), String> {
             let last_block = self.last_block.ok_or("Missing last block")?;
             let mut rollback_block: Option<&Block<TxHash>> = None;
             if last_block.hash != block.parent_hash {
                 event!(Level::WARN, "handle_block reorg detected last_block: {}, newblock: {}", last_block, block);
 
-                let common_ancestor = self.find_common_ancestor()?;
+                let common_ancestor = self.find_common_ancestor().await?;
 
                 /* clean cache from reorged blocks */
                 for bn in(common_ancestor.number.as_u64() + 1)..last_block.number.as_u64() {
@@ -182,7 +188,7 @@ pub mod tracker {
                 event!(Level::DEBUG, "common ancestor found {}", common_ancestor);
             }
 
-            let logs = self.handle_batch_block(last_block, &block, true)?;
+            let logs = self.handle_batch_block(last_block, &block, true).await?;
 
             Ok((&block, rollback_block, logs))
         }
