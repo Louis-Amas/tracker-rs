@@ -96,7 +96,7 @@ pub mod tracker {
             &self,
             filter_block: FilterBlockOption,
             filter: &Filter,
-        ) -> Result<Vec<Log>, String>;
+        ) -> Result<Vec<&Log>, String>;
     }
 
     impl<'a, Provider: BlockProvider<TxHash>> BlockCache<'a, Provider> {
@@ -161,13 +161,13 @@ pub mod tracker {
             from: &Block<TxHash>,
             to: &Block<TxHash>,
             fill_cache: bool,
-        ) -> Result<Vec<Log>, String> {
+        ) -> Result<Vec<&Log>, String> {
             let mut from_number = from.number.as_u64() + 1;
             let mut to_number = std::cmp::min(
                 from_number + self.options.batch_size as u64,
                 to.number.as_u64(),
             );
-            let mut aggregated_logs: Vec<Log> = Vec::new();
+            let mut aggregated_logs: Vec<&Log> = Vec::new();
             loop {
                 let logs_future = self.rpc_provider.get_logs(
                     FilterBlockOption::Range {
@@ -188,7 +188,7 @@ pub mod tracker {
                         .iter()
                         .map(|block| self.blocks_map.insert(block.number.as_u64(), block));
 
-                    logs.iter().for_each(|log| aggregated_logs.push(log.clone()));
+                    logs.iter().for_each(|log| aggregated_logs.push(log));
 
                     if logs.len() > 0 {
                         let last_log = logs.last().unwrap();
@@ -202,7 +202,7 @@ pub mod tracker {
                     logs_future
                         .await?
                         .iter()
-                        .for_each(|log| aggregated_logs.push(log.clone()));
+                        .for_each(|log| aggregated_logs.push(log));
                 }
 
                 from_number = to.number.as_u64();
@@ -222,7 +222,7 @@ pub mod tracker {
         async fn handle_block(
             &mut self,
             block: Block<TxHash>,
-        ) -> Result<(Block<TxHash>, Option<Block<TxHash>>, Vec<Log>), String> {
+        ) -> Result<(Block<TxHash>, Option<Block<TxHash>>, Vec<&Log>), String> {
             let last_block = self.last_block.ok_or("Missing last block")?;
             let mut rollback_block: Option<Block<TxHash>> = None;
             if last_block.hash != block.parent_hash {
@@ -359,13 +359,13 @@ mod tests {
             &self,
             filter_block: FilterBlockOption,
             _filter: &Filter,
-        ) -> Result<Vec<Log>, String> {
-            let mut aggregated_logs: Vec<Log> = Vec::new();
+        ) -> Result<Vec<&Log>, String> {
+            let mut aggregated_logs: Vec<&Log> = Vec::new();
 
             match filter_block {
                 FilterBlockOption::Range { from, to } => {
                     for bn in from..to {
-                        let logs = self
+                        let logs = &self
                             .blocks_map_by_number
                             .get(&bn)
                             .ok_or("MockRpcProvider: get_logs: missing logs")?
