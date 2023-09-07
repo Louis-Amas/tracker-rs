@@ -26,7 +26,6 @@ pub mod tracker {
     }
 
     impl fmt::Display for Block<TxHash> {
-
         fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
             write!(f, "(hash: {}, parent_hash: {}, number: {}, transactions_length: {:?}, nonce: {}, logs_bloom: {})", 
                 self.hash, 
@@ -151,6 +150,13 @@ pub mod tracker {
 
                     let _ = blocks.iter().map(|block| self.blocks_map.insert(block.number.as_u64(), block));
                     logs.iter().for_each(|log| aggregated_logs.push(log));
+
+                    if logs.len() > 0 {
+                        let last_log = logs.last().unwrap();
+                        self.blocks_map.get(&last_log.block_number.unwrap().as_u64()).ok_or("Log where the block has been emitted is not in cache".to_string())?;
+
+
+                    }
                 } else {
                     logs_future.await?.iter().for_each(|log| aggregated_logs.push(log));
                 }
