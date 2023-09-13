@@ -62,14 +62,14 @@ pub mod tracker {
         filter: Filter,
     }
 
-    pub struct BlockCache<'a, Provider: BlockProvider<TxHash>> {
+    pub struct BlockCache<Provider: BlockProvider<TxHash>> {
         pub rpc_provider: Provider,
 
         pub options: ChainCacheOptions,
 
-        pub last_block: Option<&'a Block<TxHash>>,
+        pub last_block: Option<Block<TxHash>>,
 
-        pub blocks_map: HashMap<u64,&'a Block<TxHash>>,
+        pub blocks_map: HashMap<u64, Block<TxHash>>,
     }
 
     pub enum BlockIdentifier {
@@ -86,11 +86,11 @@ pub mod tracker {
     pub trait BlockProvider<TX>: Debug + Send + Sync {
         async fn get_block(&self, number: BlockIdentifier) -> Result<Block<TX>, String>;
 
-        async fn get_minimal_block_batch<'a>(
+        async fn get_minimal_block_batch(
             &self,
             from: u64,
             to: u64,
-        ) -> Result<Vec<&'a Block<TX>>, String>;
+        ) -> Result<Vec<Block<TX>>, String>;
 
         async fn get_logs(
             &self,
@@ -99,17 +99,18 @@ pub mod tracker {
         ) -> Result<Vec<&Log>, String>;
     }
 
-    impl<'a, Provider: BlockProvider<TxHash>> BlockCache<'a, Provider> {
-        fn add_block(&mut self, block: &'a Block<TxHash>) -> &Block<TxHash> {
+    impl<Provider: BlockProvider<TxHash>> BlockCache<Provider> 
+    {
+        fn add_block(&mut self, block: Block<TxHash>) -> &Block<TxHash> {
             event!(Level::INFO, "add_block {}", block);
             let inserted_block = self.blocks_map.insert(block.number.as_u64(), block);
             self.last_block = Some(inserted_block.unwrap());
-            return &self.last_block.unwrap();
+            return &self.last_block.as_ref().unwrap();
         }
 
         async fn initialize(
             &mut self,
-            block: &'a Block<TxHash>,
+            block: Block<TxHash>,
         ) -> Result<&Block<TxHash>, String> {
             let rpc_block = self
                 .rpc_provider
@@ -125,11 +126,10 @@ pub mod tracker {
             Ok(self.add_block(block))
         }
 
-        async fn find_common_ancestor(&self) -> Result<&'a Block<TxHash>, String> {
+        async fn find_common_ancestor(&self) -> Result<&Block<TxHash>, String> {
             if self.blocks_map.len() < 2 {
                 return Err("Block cache too small can't find ancestor".to_string());
             }
-
 
             let last_block = self
                 .last_block
@@ -158,8 +158,8 @@ pub mod tracker {
 
         async fn handle_batch_block(
             &mut self,
-            from: &Block<TxHash>,
-            to: &Block<TxHash>,
+            from: Block<TxHash>,
+            to: Block<TxHash>,
             fill_cache: bool,
         ) -> Result<Vec<&Log>, String> {
             let mut from_number = from.number.as_u64() + 1;
@@ -184,9 +184,12 @@ pub mod tracker {
 
                     let (logs, blocks) = try_join!(logs_future, blocks_batch_future)?;
 
-                    let _ = blocks
-                        .iter()
-                        .map(|block| self.blocks_map.insert(block.number.as_u64(), block));
+
+                    let block = blocks.first().unwrap();
+                    self.blocks_map.insert(block.number.as_u64(), block.clone());
+                    // let _ = blocks
+                        // .iter()
+                        // .map(|block| self.blocks_map.insert(block.number.as_u64(), block));
 
                     logs.iter().for_each(|log| aggregated_logs.push(log));
 
@@ -223,7 +226,7 @@ pub mod tracker {
             &mut self,
             block: Block<TxHash>,
         ) -> Result<(Block<TxHash>, Option<Block<TxHash>>, Vec<&Log>), String> {
-            let last_block = self.last_block.ok_or("Missing last block")?;
+            let last_block = self.last_block.as_ref().ok_or("Missing last block")?;
             let mut rollback_block: Option<Block<TxHash>> = None;
             if last_block.hash != block.parent_hash {
                 event!(
@@ -235,18 +238,22 @@ pub mod tracker {
 
                 let common_ancestor = self.find_common_ancestor().await?;
 
-                /* clean cache from reorged blocks */
-                for bn in (common_ancestor.number.as_u64() + 1)..last_block.number.as_u64() {
-                    self.blocks_map.remove(&bn);
-                }
 
-                self.last_block = Some(common_ancestor);
+
                 rollback_block = Some(common_ancestor.clone());
-
                 event!(Level::DEBUG, "common ancestor found {}", common_ancestor);
             }
 
-            let logs = self.handle_batch_block(last_block, &block, true).await?;
+            /* clean cache from reorged blocks */
+            if let Some(last_safe_block) = rollback_block.as_ref() {
+                for bn in (last_safe_block.number.as_u64() + 1)..last_block.number.as_u64() {
+                    self.blocks_map.remove(&bn);
+                }
+            }
+
+            // self.last_block = rollback_block;
+            let from = self.last_block.clone().unwrap();
+            let logs = self.handle_batch_block(from, block.clone(), true).await?;
 
             Ok((block, rollback_block, logs))
         }
@@ -263,14 +270,14 @@ mod tests {
 
     #[derive(Clone, Debug)]
     struct MockRpcProvider<TX> {
-        latest: Block<TX>,
+        // latest: Block<TX>,
         blocks_map_by_number: HashMap<u64, (Block<TX>, Vec<Log>)>,
-        blocks_map_by_hash: HashMap<H256, (Block<TX>, Vec<Log>)>,
+        // blocks_map_by_hash: HashMap<H256, (Block<TX>, Vec<Log>)>,
     }
 
     fn generate_mock_provider(from: u64, to: u64, logs_count: u32, diverge_at: u64) -> MockRpcProvider<TxHash> {
         let mut blocks_map_by_number: HashMap<u64, (Block<TxHash>, Vec<Log>)> = HashMap::new();
-        let mut blocks_map_by_hash: HashMap<H256, (Block<TxHash>, Vec<Log>)> = HashMap::new();
+        // let mut blocks_map_by_hash: HashMap<H256, (Block<TxHash>, Vec<Log>)> = HashMap::new();
 
         let mut zero = H256::zero();
         let initial_hash_values = zero.as_bytes_mut();
@@ -306,15 +313,15 @@ mod tests {
                        
             parent_hash = block.hash;
 
-            blocks_map_by_number.insert(bn, (block.clone(), logs));
-            blocks_map_by_hash.insert(block.hash, (block, logs));
+            blocks_map_by_number.insert(bn, (block, logs));
+            // blocks_map_by_hash.insert(block.hash, (block, logs));
 
         }
 
         MockRpcProvider {
-            blocks_map_by_hash,
+            // blocks_map_by_hash,
             blocks_map_by_number,
-            latest: blocks_map_by_number.get(&to).unwrap().0
+            // latest: blocks_map_by_number.get(&to).unwrap().0
         }
 
     }
@@ -323,33 +330,35 @@ mod tests {
     impl BlockProvider<TxHash> for MockRpcProvider<TxHash> {
         async fn get_block(&self, number: BlockIdentifier) -> Result<Block<TxHash>, String> {
             match number {
-                BlockIdentifier::Latest => Ok(self.latest),
+                // BlockIdentifier::Latest => Ok(self.latest),
+                BlockIdentifier::Latest => Err("Not implemented".to_string()),
                 BlockIdentifier::Number(block_number) => Ok(self
                     .blocks_map_by_number
                     .get(&block_number)
                     .ok_or("MockRpcProvider get block by number: missing block")?
-                    .0),
-                BlockIdentifier::Hash(block_hash) => Ok(self
-                    .blocks_map_by_hash
-                    .get(&block_hash)
-                    .ok_or("MockRpcProvider get block by hash: missing block")?
-                    .0),
+                    .0.clone()),
+                // BlockIdentifier::Hash(block_hash) => Ok(self
+                //     .blocks_map_by_hash
+                //     .get(&block_hash)
+                //     .ok_or("MockRpcProvider get block by hash: missing block")?
+                //     .0),
+                BlockIdentifier::Hash(_block_hash) => Err("Error".to_string()),
             }
         }
 
-        async fn get_minimal_block_batch<'a>(
+        async fn get_minimal_block_batch(
             &self,
             from_number: u64,
             to_number: u64,
-        ) -> Result<Vec<&'a Block<TxHash>>, String> {
-            let mut vec: Vec<&'a Block<TxHash>> = Vec::new();
+        ) -> Result<Vec<Block<TxHash>>, String> {
+            let mut vec: Vec<Block<TxHash>> = Vec::new();
 
             for bn in from_number..to_number {
                 vec.push(
-                    &self.blocks_map_by_number
+                    self.blocks_map_by_number
                         .get(&bn)
                         .ok_or("MockRpcProvider: get_minimal_block_batch: missing block number")?
-                        .0,
+                        .0.clone(),
                 )
             }
             Ok(vec)
@@ -367,6 +376,7 @@ mod tests {
                     for bn in from..to {
                         let logs = &self
                             .blocks_map_by_number
+
                             .get(&bn)
                             .ok_or("MockRpcProvider: get_logs: missing logs")?
                             .1;
