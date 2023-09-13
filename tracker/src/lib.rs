@@ -244,11 +244,10 @@ pub mod tracker {
                 for bn in (last_safe_block.number.as_u64() + 1)..last_block.number.as_u64() {
                     self.blocks_map.remove(&bn);
                 }
+                self.last_block = Some(last_safe_block.clone());
             }
-            self.last_block = rollback_block.clone();
 
-            let from = self.last_block.clone().unwrap();
-            let logs = self.handle_batch_block(from, block.clone(), true).await?;
+            let logs = self.handle_batch_block(self.last_block.clone().unwrap(), block.clone(), true).await?;
 
             Ok((block, rollback_block, logs))
         }
