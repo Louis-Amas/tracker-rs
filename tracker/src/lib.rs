@@ -184,10 +184,9 @@ pub mod tracker {
 
                     let (logs, blocks) = try_join!(logs_future, blocks_batch_future)?;
 
-
                     let _ = blocks
-                        .iter()
-                        .map(|block| self.blocks_map.insert(block.number.as_u64(), block.clone()));
+                        .into_iter()
+                        .map(|block| self.blocks_map.insert(block.number.as_u64(), block));
 
                     logs.iter().for_each(|log| aggregated_logs.push(log));
 
