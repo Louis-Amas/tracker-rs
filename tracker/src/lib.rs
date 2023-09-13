@@ -235,9 +235,7 @@ pub mod tracker {
 
                 let common_ancestor = self.find_common_ancestor().await?;
 
-
-
-                rollback_block = Some(common_ancestor.clone());
+                rollback_block = Some(common_ancestor.to_owned());
                 event!(Level::DEBUG, "common ancestor found {}", common_ancestor);
             }
 
@@ -247,8 +245,8 @@ pub mod tracker {
                     self.blocks_map.remove(&bn);
                 }
             }
+            self.last_block = rollback_block.clone();
 
-            // self.last_block = rollback_block;
             let from = self.last_block.clone().unwrap();
             let logs = self.handle_batch_block(from, block.clone(), true).await?;
 
