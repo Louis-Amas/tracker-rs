@@ -460,9 +460,9 @@ fn remove_trailing_zeros(hex_string: &str) -> String {
     #[traced_test]
     #[tokio::test]
     async fn test() {
-        let mock_provider1 = generate_mock_provider(1, 5, 2, 5, 1);
+        let mock_provider1 = generate_mock_provider(1, 10, 2, 5, 1);
 
-        let mock_provider2 = generate_mock_provider(1, 5, 1, 2, 2);
+        let mock_provider2 = generate_mock_provider(1, 10, 1, 2, 2);
 
         let options = ChainCacheOptions {
             max_block_cached: 32,
@@ -498,6 +498,19 @@ fn remove_trailing_zeros(hex_string: &str) -> String {
         block = mock_provider2.get_block(BlockIdentifier::Number(3)).await.unwrap();
         let handle_block_result = cache.handle_block(block).await.unwrap();
         assert_eq!(block_to_string_minimal(&handle_block_result.0), "[3,0x23,0x2]");
+
+        block = mock_provider1.get_block(BlockIdentifier::Number(3)).await.unwrap();
+        let handle_block_result = cache.handle_block(block).await.unwrap();
+        assert_eq!(block_to_string_minimal(&handle_block_result.0), "[3,0x3,0x2]");
+
+        block = mock_provider1.get_block(BlockIdentifier::Number(4)).await.unwrap();
+        let handle_block_result = cache.handle_block(block).await.unwrap();
+        assert_eq!(block_to_string_minimal(&handle_block_result.0), "[4,0x4,0x3]");
+
+        cache.rpc_provider = &mock_provider2;
+        block = mock_provider2.get_block(BlockIdentifier::Number(5)).await.unwrap();
+        let handle_block_result = cache.handle_block(block).await.unwrap();
+        assert_eq!(block_to_string_minimal(&handle_block_result.0), "[5,0x25,0x24]");
 
         assert_eq!(true, true);
     }
