@@ -51,19 +51,15 @@ pub mod tracker {
     pub struct ChainCacheOptions {
         pub max_block_cached: u32,
 
-        pub retries_count: u32,
-
-        pub retry_delay_ms: u32,
-
         pub batch_size: u32,
 
         pub block_back_count: u32,
 
-        filter: Filter,
+        pub filter: Filter,
     }
 
-    pub struct BlockCache<Provider: BlockProvider<TxHash>> {
-        pub rpc_provider: Provider,
+    pub struct BlockCache<'a, Provider: BlockProvider<TxHash>> {
+        pub rpc_provider: &'a Provider,
 
         pub options: ChainCacheOptions,
 
@@ -99,16 +95,18 @@ pub mod tracker {
         ) -> Result<Vec<&Log>, String>;
     }
 
-    impl<Provider: BlockProvider<TxHash>> BlockCache<Provider> 
+    impl<'a, Provider: BlockProvider<TxHash>> BlockCache<'a, Provider> 
     {
         fn add_block(&mut self, block: Block<TxHash>) -> &Block<TxHash> {
             event!(Level::INFO, "add_block {}", block);
-            let inserted_block = self.blocks_map.insert(block.number.as_u64(), block);
-            self.last_block = Some(inserted_block.unwrap());
-            return &self.last_block.as_ref().unwrap();
+            let bn = block.number.as_u64();
+            self.blocks_map.insert(bn, block);
+
+            self.last_block = Some(self.blocks_map.get(&bn).unwrap().clone());
+            return self.blocks_map.get(&bn).unwrap();
         }
 
-        async fn initialize(
+        pub async fn initialize(
             &mut self,
             block: Block<TxHash>,
         ) -> Result<&Block<TxHash>, String> {
@@ -219,7 +217,7 @@ pub mod tracker {
             Ok(aggregated_logs)
         }
 
-        async fn handle_block(
+        pub async fn handle_block(
             &mut self,
             block: Block<TxHash>,
         ) -> Result<(Block<TxHash>, Option<Block<TxHash>>, Vec<&Log>), String> {
@@ -258,32 +256,33 @@ pub mod tracker {
 mod tests {
     use std::collections::HashMap;
 
+    use tracing::{info, debug};
     use super::tracker::*;
     use async_trait::async_trait;
-    use ethers::types::{Log, TxHash, H256, U64, U256};
+    use ethers::types::{Log, TxHash, H256, U64, U256}; 
+    use tracing_test::traced_test;
 
     #[derive(Clone, Debug)]
     struct MockRpcProvider<TX> {
-        // latest: Block<TX>,
+        latest: Block<TX>,
         blocks_map_by_number: HashMap<u64, (Block<TX>, Vec<Log>)>,
-        // blocks_map_by_hash: HashMap<H256, (Block<TX>, Vec<Log>)>,
+        blocks_map_by_hash: HashMap<H256, (Block<TX>, Vec<Log>)>,
     }
 
     fn generate_mock_provider(from: u64, to: u64, logs_count: u32, diverge_at: u64) -> MockRpcProvider<TxHash> {
         let mut blocks_map_by_number: HashMap<u64, (Block<TxHash>, Vec<Log>)> = HashMap::new();
-        // let mut blocks_map_by_hash: HashMap<H256, (Block<TxHash>, Vec<Log>)> = HashMap::new();
+        let mut blocks_map_by_hash: HashMap<H256, (Block<TxHash>, Vec<Log>)> = HashMap::new();
 
         let mut zero = H256::zero();
         let initial_hash_values = zero.as_bytes_mut();
         let mut parent_hash = H256::from_slice(initial_hash_values);
-        
+      
         for bn in from..to {
-            initial_hash_values[0] += 1;
+            initial_hash_values[31] += 1;
             let mut hash = H256::from_slice(initial_hash_values);
             if bn >= diverge_at {
                 hash = H256::random();
             }
-
 
             let block = Block {
                 number: U64([bn; 1]),
@@ -307,15 +306,16 @@ mod tests {
                        
             parent_hash = block.hash;
 
-            blocks_map_by_number.insert(bn, (block, logs));
-            // blocks_map_by_hash.insert(block.hash, (block, logs));
+            debug!("insert block {} with hash {}", bn, hash);
 
+            blocks_map_by_number.insert(bn, (block.clone(), logs.clone()));
+            blocks_map_by_hash.insert(block.clone().hash, (block.clone(), logs));
         }
 
         MockRpcProvider {
-            // blocks_map_by_hash,
-            blocks_map_by_number,
-            // latest: blocks_map_by_number.get(&to).unwrap().0
+            blocks_map_by_hash,
+            latest: blocks_map_by_number.get(&(to - 1)).unwrap().0.clone(),
+            blocks_map_by_number
         }
 
     }
@@ -324,19 +324,17 @@ mod tests {
     impl BlockProvider<TxHash> for MockRpcProvider<TxHash> {
         async fn get_block(&self, number: BlockIdentifier) -> Result<Block<TxHash>, String> {
             match number {
-                // BlockIdentifier::Latest => Ok(self.latest),
-                BlockIdentifier::Latest => Err("Not implemented".to_string()),
+                BlockIdentifier::Latest => Ok(self.latest.clone()),
                 BlockIdentifier::Number(block_number) => Ok(self
                     .blocks_map_by_number
                     .get(&block_number)
                     .ok_or("MockRpcProvider get block by number: missing block")?
                     .0.clone()),
-                // BlockIdentifier::Hash(block_hash) => Ok(self
-                //     .blocks_map_by_hash
-                //     .get(&block_hash)
-                //     .ok_or("MockRpcProvider get block by hash: missing block")?
-                //     .0),
-                BlockIdentifier::Hash(_block_hash) => Err("Error".to_string()),
+                BlockIdentifier::Hash(block_hash) => Ok(self
+                    .blocks_map_by_hash
+                    .get(&block_hash)
+                    .ok_or("MockRpcProvider get block by hash: missing block")?
+                    .0.clone()),
             }
         }
 
@@ -383,8 +381,95 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test() {
+    fn remove_leading_zeros(string: String) -> String {
+        let hex_string = string.as_str();
+        // Strip the "0x" prefix if present
+        let hex_string = if hex_string.starts_with("0x") {
+            &hex_string[2..]
+        } else {
+            hex_string
+        };
+
+        // Use an iterator to find the index of the first non-zero character
+        let first_non_zero_index = hex_string
+            .char_indices()
+            .find(|&(_, c)| c != '0')
+            .map(|(idx, _)| idx)
+            .unwrap_or(hex_string.len());
+        let new_string = hex_string[first_non_zero_index..].to_string();
+        if new_string.len() == 0 {
+            "0x0".to_string()
+        } else {
+            format!("0x{}", new_string)
+        }
+    }
+
+fn remove_trailing_zeros(hex_string: &str) -> String {
+    // Check if the string starts with "0x" and split it into prefix and value
+    if let Some((prefix, value)) = hex_string.split_once("0x") {
+        // Remove trailing zeros from the hexadecimal value
+        let trimmed_value = value.trim_end_matches('0');
+        
+        // Reconstruct the string with "0x" prefix and the trimmed value
+        format!("{}{}", prefix, trimmed_value)
+    } else {
+        // If there's no "0x" prefix, return the original string
+        hex_string.to_string()
+    }
+}
+    fn h256_to_string(hash: H256) -> String {
+        let str = hash.as_bytes(); 
+        let num_strings: Vec<String> = str.iter().map(|&byte| byte.to_string()).collect();
+
+        format!("0x{}", num_strings.join(""))
+    }
+
+    fn block_to_string_minimal(block: &Block<TxHash>) -> String {
+        format!(
+            "[{},{},{}]", 
+            block.number, 
+            remove_leading_zeros(h256_to_string(block.hash)), 
+            remove_leading_zeros(h256_to_string(block.parent_hash))
+        )
+    }
+
+    #[traced_test]
+    #[tokio::test]
+    async fn test() {
+        let mock_provider1 = generate_mock_provider(1, 5, 2, 5);
+
+        // let mock_provider2 = generate_mock_provider(0, 5, 1, 2);
+
+        let options = ChainCacheOptions {
+            max_block_cached: 32,
+            batch_size: 10,
+            block_back_count: 5,
+            filter: Filter { 
+                address: None, 
+                topics: None
+            }
+        };
+
+        let mut cache = BlockCache {
+            rpc_provider: &mock_provider1,
+            options,
+            last_block: None,
+            blocks_map: HashMap::new(),
+        };
+
+        let mut block = mock_provider1.get_block(BlockIdentifier::Number(1)).await.unwrap();
+        info!("Starting with block {}", block);
+
+        let result = cache.initialize(block).await;
+        
+        assert_eq!(block_to_string_minimal(result.unwrap()), "[1,0x1,0x0]");
+
+        block = mock_provider1.get_block(BlockIdentifier::Number(2)).await.unwrap();
+
+        let handle_block_result = cache.handle_block(block).await.unwrap();
+
+        assert_eq!(block_to_string_minimal(&handle_block_result.0), "[2,0x2,0x1]");
+
         assert_eq!(true, true);
     }
 }
