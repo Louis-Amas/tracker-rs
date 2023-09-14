@@ -97,19 +97,10 @@ pub mod tracker {
 
     impl<'a, Provider: BlockProvider<TxHash>> BlockCache<'a, Provider> 
     {
-        fn add_block(&mut self, block: Block<TxHash>) -> &Block<TxHash> {
-            event!(Level::INFO, "add_block {}", block);
-            let bn = block.number.as_u64();
-            self.last_block = Some(block.number.as_u64());
-            self.blocks_map.insert(bn, block);
-
-            return self.blocks_map.get(&bn).unwrap();
-        }
-
         pub async fn initialize(
             &mut self,
             block: Block<TxHash>,
-        ) -> Result<&Block<TxHash>, String> {
+        ) -> Result<Block<TxHash>, String> {
             let rpc_block = self
                 .rpc_provider
                 .get_block(BlockIdentifier::Hash(block.hash))
@@ -121,7 +112,13 @@ pub mod tracker {
                 );
             }
 
-            Ok(self.add_block(block))
+            let bn = block.number.as_u64();
+            self.last_block = Some(block.number.as_u64());
+            self.blocks_map.insert(bn, block.clone());
+
+            event!(Level::INFO, "Initialized with block {}", block);
+
+            Ok(block)
         }
 
         async fn find_common_ancestor(&self) -> Result<&Block<TxHash>, String> {
@@ -133,7 +130,9 @@ pub mod tracker {
                 .last_block
                 .ok_or("No last block available".to_string())?;
             let min_block_back =
-                std::cmp::min(self.blocks_map.len() as u32, self.options.block_back_count);
+                std::cmp::min(self.blocks_map.len() as u32 - 1, self.options.block_back_count);
+
+            event!(Level::DEBUG, "find_common_ancestor last_block: {} min_block_back {}", last_block, min_block_back);
             let from = last_block - min_block_back as u64;
             let batch = self
                 .rpc_provider
@@ -159,6 +158,7 @@ pub mod tracker {
             to: Block<TxHash>,
             fill_cache: bool,
         ) -> Result<Vec<&Log>, String> {
+            event!(Level::DEBUG, "handle_batch_block {} {} {}", from, to, fill_cache);
             let mut from_number = from.number.as_u64() + 1;
             let mut to_number = std::cmp::min(
                 from_number + self.options.batch_size as u64,
@@ -181,9 +181,11 @@ pub mod tracker {
 
                     let (logs, blocks) = try_join!(logs_future, blocks_batch_future)?;
 
-                    let _ = blocks
+                    blocks
                         .into_iter()
-                        .map(|block| self.blocks_map.insert(block.number.as_u64(), block));
+                        .for_each(|block| {
+                            self.blocks_map.insert(block.number.as_u64(), block);
+                        });
 
                     logs.iter().for_each(|log| aggregated_logs.push(log));
 
@@ -202,7 +204,11 @@ pub mod tracker {
                         .for_each(|log| aggregated_logs.push(log));
                 }
 
+                self.last_block = Some(to_number);
                 from_number = to.number.as_u64();
+
+                event!(Level::DEBUG, "New last block {}", to_number);
+
                 to_number = std::cmp::min(
                     from_number + self.options.batch_size as u64,
                     to.number.as_u64(),
@@ -216,8 +222,11 @@ pub mod tracker {
             Ok(aggregated_logs)
         }
 
-        fn get_last_block(& self) -> Result<&Block<TxHash>, String> {
-            let last_block_number = self.last_block.ok_or("Missing last block")?;
+        fn get_last_block(&self) -> Result<&Block<TxHash>, String> {
+            let last_block_number = self.last_block.ok_or("Missing last block number")?;
+
+                event!(Level::DEBUG, "get last block {}", last_block_number);
+
             let last_block = self.blocks_map.get(&last_block_number).ok_or("Missing last block")?;
 
             Ok(last_block)
@@ -227,6 +236,7 @@ pub mod tracker {
             &mut self,
             block: Block<TxHash>,
         ) -> Result<(Block<TxHash>, Option<Block<TxHash>>, Vec<&Log>), String> {
+            event!(Level::DEBUG, "Handle block {}", block);
             let last_block = self.get_last_block()?;
 
             let mut rollback_block: Option<Block<TxHash>> = None;
@@ -247,11 +257,15 @@ pub mod tracker {
             /* clean cache from reorged blocks */
             if let Some(last_safe_block) = rollback_block.as_ref() {
                 let new_last_block_number = last_block.number.as_u64();
+
                 for bn in (last_safe_block.number.as_u64() + 1)..last_block.number.as_u64() {
+                    event!(Level::DEBUG, "Remove block with number > {}", bn);
                     self.blocks_map.remove(&bn);
                 }
 
-                self.last_block = Some(new_last_block_number);;
+                event!(Level::DEBUG, "set last block number {}", last_safe_block);
+                self.last_block = Some(new_last_block_number);
+                self.blocks_map.insert(new_last_block_number, last_safe_block.clone());
             }
 
             let logs = self.handle_batch_block(self.blocks_map.get(&self.last_block.unwrap()).unwrap().clone(), block.clone(), true).await?;
@@ -278,7 +292,7 @@ mod tests {
         blocks_map_by_hash: HashMap<H256, (Block<TX>, Vec<Log>)>,
     }
 
-    fn generate_mock_provider(from: u64, to: u64, logs_count: u32, diverge_at: u64) -> MockRpcProvider<TxHash> {
+    fn generate_mock_provider(from: u64, to: u64, logs_count: u32, diverge_at: u64, prefix: u8) -> MockRpcProvider<TxHash> {
         let mut blocks_map_by_number: HashMap<u64, (Block<TxHash>, Vec<Log>)> = HashMap::new();
         let mut blocks_map_by_hash: HashMap<H256, (Block<TxHash>, Vec<Log>)> = HashMap::new();
 
@@ -288,10 +302,10 @@ mod tests {
       
         for bn in from..to {
             initial_hash_values[31] += 1;
-            let mut hash = H256::from_slice(initial_hash_values);
-            if bn >= diverge_at {
-                hash = H256::random();
+            if bn > diverge_at {
+                initial_hash_values[30] = prefix;
             }
+            let hash = H256::from_slice(initial_hash_values);
 
             let block = Block {
                 number: U64([bn; 1]),
@@ -354,7 +368,8 @@ mod tests {
         ) -> Result<Vec<Block<TxHash>>, String> {
             let mut vec: Vec<Block<TxHash>> = Vec::new();
 
-            for bn in from_number..to_number {
+            debug!("get minimal block batch {} {}", from_number, to_number);
+            for bn in from_number..(to_number + 1) {
                 vec.push(
                     self.blocks_map_by_number
                         .get(&bn)
@@ -445,9 +460,9 @@ fn remove_trailing_zeros(hex_string: &str) -> String {
     #[traced_test]
     #[tokio::test]
     async fn test() {
-        let mock_provider1 = generate_mock_provider(1, 5, 2, 5);
+        let mock_provider1 = generate_mock_provider(1, 5, 2, 5, 1);
 
-        // let mock_provider2 = generate_mock_provider(0, 5, 1, 2);
+        let mock_provider2 = generate_mock_provider(1, 5, 1, 2, 2);
 
         let options = ChainCacheOptions {
             max_block_cached: 32,
@@ -470,14 +485,19 @@ fn remove_trailing_zeros(hex_string: &str) -> String {
         info!("Starting with block {}", block);
 
         let result = cache.initialize(block).await;
-        
-        assert_eq!(block_to_string_minimal(result.unwrap()), "[1,0x1,0x0]");
+        assert_eq!(block_to_string_minimal(&result.unwrap()), "[1,0x1,0x0]");
 
         block = mock_provider1.get_block(BlockIdentifier::Number(2)).await.unwrap();
-
         let handle_block_result = cache.handle_block(block).await.unwrap();
-
         assert_eq!(block_to_string_minimal(&handle_block_result.0), "[2,0x2,0x1]");
+
+        block = mock_provider1.get_block(BlockIdentifier::Number(3)).await.unwrap();
+        let handle_block_result = cache.handle_block(block).await.unwrap();
+        assert_eq!(block_to_string_minimal(&handle_block_result.0), "[3,0x3,0x2]");
+
+        block = mock_provider2.get_block(BlockIdentifier::Number(3)).await.unwrap();
+        let handle_block_result = cache.handle_block(block).await.unwrap();
+        assert_eq!(block_to_string_minimal(&handle_block_result.0), "[3,0x23,0x2]");
 
         assert_eq!(true, true);
     }
