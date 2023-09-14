@@ -63,7 +63,7 @@ pub mod tracker {
 
         pub options: ChainCacheOptions,
 
-        pub last_block: Option<Block<TxHash>>,
+        pub last_block: Option<u64>,
 
         pub blocks_map: HashMap<u64, Block<TxHash>>,
     }
@@ -100,9 +100,9 @@ pub mod tracker {
         fn add_block(&mut self, block: Block<TxHash>) -> &Block<TxHash> {
             event!(Level::INFO, "add_block {}", block);
             let bn = block.number.as_u64();
+            self.last_block = Some(block.number.as_u64());
             self.blocks_map.insert(bn, block);
 
-            self.last_block = Some(self.blocks_map.get(&bn).unwrap().clone());
             return self.blocks_map.get(&bn).unwrap();
         }
 
@@ -131,14 +131,13 @@ pub mod tracker {
 
             let last_block = self
                 .last_block
-                .as_ref()
                 .ok_or("No last block available".to_string())?;
             let min_block_back =
                 std::cmp::min(self.blocks_map.len() as u32, self.options.block_back_count);
-            let from = last_block.number - min_block_back;
+            let from = last_block - min_block_back as u64;
             let batch = self
                 .rpc_provider
-                .get_minimal_block_batch(from.as_u64(), last_block.number.as_u64() - 1)
+                .get_minimal_block_batch(from, last_block - 1)
                 .await?;
 
             for block in batch.iter().rev() {
@@ -217,11 +216,19 @@ pub mod tracker {
             Ok(aggregated_logs)
         }
 
+        fn get_last_block(& self) -> Result<&Block<TxHash>, String> {
+            let last_block_number = self.last_block.ok_or("Missing last block")?;
+            let last_block = self.blocks_map.get(&last_block_number).ok_or("Missing last block")?;
+
+            Ok(last_block)
+        }
+
         pub async fn handle_block(
             &mut self,
             block: Block<TxHash>,
         ) -> Result<(Block<TxHash>, Option<Block<TxHash>>, Vec<&Log>), String> {
-            let last_block = self.last_block.as_ref().ok_or("Missing last block")?;
+            let last_block = self.get_last_block()?;
+
             let mut rollback_block: Option<Block<TxHash>> = None;
             if last_block.hash != block.parent_hash {
                 event!(
@@ -239,13 +246,15 @@ pub mod tracker {
 
             /* clean cache from reorged blocks */
             if let Some(last_safe_block) = rollback_block.as_ref() {
+                let new_last_block_number = last_block.number.as_u64();
                 for bn in (last_safe_block.number.as_u64() + 1)..last_block.number.as_u64() {
                     self.blocks_map.remove(&bn);
                 }
-                self.last_block = Some(last_safe_block.clone());
+
+                self.last_block = Some(new_last_block_number);;
             }
 
-            let logs = self.handle_batch_block(self.last_block.clone().unwrap(), block.clone(), true).await?;
+            let logs = self.handle_batch_block(self.blocks_map.get(&self.last_block.unwrap()).unwrap().clone(), block.clone(), true).await?;
 
             Ok((block, rollback_block, logs))
         }
