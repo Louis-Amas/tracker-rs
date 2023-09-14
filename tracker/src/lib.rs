@@ -31,9 +31,9 @@ pub mod tracker {
     impl fmt::Display for Block<TxHash> {
         fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
             write!(f, "(hash: {}, parent_hash: {}, number: {}, transactions_length: {:?}, nonce: {}, logs_bloom: {})", 
-                self.hash, 
-                self.parent_hash, 
-                self.number, 
+                self.hash,
+                self.parent_hash,
+                self.number,
                 self.transactions.as_ref()
                     .map(|tx| tx.len().to_string())
                     .unwrap_or_else(|| "No transactions".to_string()), 
@@ -95,12 +95,8 @@ pub mod tracker {
         ) -> Result<Vec<&Log>, String>;
     }
 
-    impl<'a, Provider: BlockProvider<TxHash>> BlockCache<'a, Provider> 
-    {
-        pub async fn initialize(
-            &mut self,
-            block: Block<TxHash>,
-        ) -> Result<Block<TxHash>, String> {
+    impl<'a, Provider: BlockProvider<TxHash>> BlockCache<'a, Provider> {
+        pub async fn initialize(&mut self, block: Block<TxHash>) -> Result<Block<TxHash>, String> {
             let rpc_block = self
                 .rpc_provider
                 .get_block(BlockIdentifier::Hash(block.hash))
@@ -129,10 +125,17 @@ pub mod tracker {
             let last_block = self
                 .last_block
                 .ok_or("No last block available".to_string())?;
-            let min_block_back =
-                std::cmp::min(self.blocks_map.len() as u32 - 1, self.options.block_back_count);
+            let min_block_back = std::cmp::min(
+                self.blocks_map.len() as u32 - 1,
+                self.options.block_back_count,
+            );
 
-            event!(Level::DEBUG, "find_common_ancestor last_block: {} min_block_back {}", last_block, min_block_back);
+            event!(
+                Level::DEBUG,
+                "find_common_ancestor last_block: {} min_block_back {}",
+                last_block,
+                min_block_back
+            );
             let from = last_block - min_block_back as u64;
             let batch = self
                 .rpc_provider
@@ -158,7 +161,13 @@ pub mod tracker {
             to: Block<TxHash>,
             fill_cache: bool,
         ) -> Result<Vec<&Log>, String> {
-            event!(Level::DEBUG, "handle_batch_block {} {} {}", from, to, fill_cache);
+            event!(
+                Level::DEBUG,
+                "handle_batch_block {} {} {}",
+                from,
+                to,
+                fill_cache
+            );
             let mut from_number = from.number.as_u64() + 1;
             let mut to_number = std::cmp::min(
                 from_number + self.options.batch_size as u64,
@@ -181,11 +190,9 @@ pub mod tracker {
 
                     let (logs, blocks) = try_join!(logs_future, blocks_batch_future)?;
 
-                    blocks
-                        .into_iter()
-                        .for_each(|block| {
-                            self.blocks_map.insert(block.number.as_u64(), block);
-                        });
+                    blocks.into_iter().for_each(|block| {
+                        self.blocks_map.insert(block.number.as_u64(), block);
+                    });
 
                     logs.iter().for_each(|log| aggregated_logs.push(log));
 
@@ -225,9 +232,12 @@ pub mod tracker {
         fn get_last_block(&self) -> Result<&Block<TxHash>, String> {
             let last_block_number = self.last_block.ok_or("Missing last block number")?;
 
-                event!(Level::DEBUG, "get last block {}", last_block_number);
+            event!(Level::DEBUG, "get last block {}", last_block_number);
 
-            let last_block = self.blocks_map.get(&last_block_number).ok_or("Missing last block")?;
+            let last_block = self
+                .blocks_map
+                .get(&last_block_number)
+                .ok_or("Missing last block")?;
 
             Ok(last_block)
         }
@@ -265,10 +275,20 @@ pub mod tracker {
 
                 event!(Level::DEBUG, "set last block number {}", last_safe_block);
                 self.last_block = Some(new_last_block_number);
-                self.blocks_map.insert(new_last_block_number, last_safe_block.clone());
+                self.blocks_map
+                    .insert(new_last_block_number, last_safe_block.clone());
             }
 
-            let logs = self.handle_batch_block(self.blocks_map.get(&self.last_block.unwrap()).unwrap().clone(), block.clone(), true).await?;
+            let logs = self
+                .handle_batch_block(
+                    self.blocks_map
+                        .get(&self.last_block.unwrap())
+                        .unwrap()
+                        .clone(),
+                    block.clone(),
+                    true,
+                )
+                .await?;
 
             Ok((block, rollback_block, logs))
         }
@@ -279,10 +299,10 @@ pub mod tracker {
 mod tests {
     use std::collections::HashMap;
 
-    use tracing::{info, debug};
     use super::tracker::*;
     use async_trait::async_trait;
-    use ethers::types::{Log, TxHash, H256, U64, U256}; 
+    use ethers::types::{Log, TxHash, H256, U256, U64};
+    use tracing::{debug, info};
     use tracing_test::traced_test;
 
     #[derive(Clone, Debug)]
@@ -292,14 +312,20 @@ mod tests {
         blocks_map_by_hash: HashMap<H256, (Block<TX>, Vec<Log>)>,
     }
 
-    fn generate_mock_provider(from: u64, to: u64, logs_count: u32, diverge_at: u64, prefix: u8) -> MockRpcProvider<TxHash> {
+    fn generate_mock_provider(
+        from: u64,
+        to: u64,
+        logs_count: u32,
+        diverge_at: u64,
+        prefix: u8,
+    ) -> MockRpcProvider<TxHash> {
         let mut blocks_map_by_number: HashMap<u64, (Block<TxHash>, Vec<Log>)> = HashMap::new();
         let mut blocks_map_by_hash: HashMap<H256, (Block<TxHash>, Vec<Log>)> = HashMap::new();
 
         let mut zero = H256::zero();
         let initial_hash_values = zero.as_bytes_mut();
         let mut parent_hash = H256::from_slice(initial_hash_values);
-      
+
         for bn in from..to {
             initial_hash_values[31] += 1;
             if bn > diverge_at {
@@ -326,7 +352,7 @@ mod tests {
 
                 logs.push(log);
             }
-                       
+
             parent_hash = block.hash;
 
             debug!("insert block {} with hash {}", bn, hash);
@@ -338,9 +364,8 @@ mod tests {
         MockRpcProvider {
             blocks_map_by_hash,
             latest: blocks_map_by_number.get(&(to - 1)).unwrap().0.clone(),
-            blocks_map_by_number
+            blocks_map_by_number,
         }
-
     }
 
     #[async_trait]
@@ -352,12 +377,14 @@ mod tests {
                     .blocks_map_by_number
                     .get(&block_number)
                     .ok_or("MockRpcProvider get block by number: missing block")?
-                    .0.clone()),
+                    .0
+                    .clone()),
                 BlockIdentifier::Hash(block_hash) => Ok(self
                     .blocks_map_by_hash
                     .get(&block_hash)
                     .ok_or("MockRpcProvider get block by hash: missing block")?
-                    .0.clone()),
+                    .0
+                    .clone()),
             }
         }
 
@@ -374,7 +401,8 @@ mod tests {
                     self.blocks_map_by_number
                         .get(&bn)
                         .ok_or("MockRpcProvider: get_minimal_block_batch: missing block number")?
-                        .0.clone(),
+                        .0
+                        .clone(),
                 )
             }
             Ok(vec)
@@ -392,7 +420,6 @@ mod tests {
                     for bn in from..to {
                         let logs = &self
                             .blocks_map_by_number
-
                             .get(&bn)
                             .ok_or("MockRpcProvider: get_logs: missing logs")?
                             .1;
@@ -428,21 +455,21 @@ mod tests {
         }
     }
 
-fn remove_trailing_zeros(hex_string: &str) -> String {
-    // Check if the string starts with "0x" and split it into prefix and value
-    if let Some((prefix, value)) = hex_string.split_once("0x") {
-        // Remove trailing zeros from the hexadecimal value
-        let trimmed_value = value.trim_end_matches('0');
-        
-        // Reconstruct the string with "0x" prefix and the trimmed value
-        format!("{}{}", prefix, trimmed_value)
-    } else {
-        // If there's no "0x" prefix, return the original string
-        hex_string.to_string()
+    fn remove_trailing_zeros(hex_string: &str) -> String {
+        // Check if the string starts with "0x" and split it into prefix and value
+        if let Some((prefix, value)) = hex_string.split_once("0x") {
+            // Remove trailing zeros from the hexadecimal value
+            let trimmed_value = value.trim_end_matches('0');
+
+            // Reconstruct the string with "0x" prefix and the trimmed value
+            format!("{}{}", prefix, trimmed_value)
+        } else {
+            // If there's no "0x" prefix, return the original string
+            hex_string.to_string()
+        }
     }
-}
     fn h256_to_string(hash: H256) -> String {
-        let str = hash.as_bytes(); 
+        let str = hash.as_bytes();
         let num_strings: Vec<String> = str.iter().map(|&byte| byte.to_string()).collect();
 
         format!("0x{}", num_strings.join(""))
@@ -450,9 +477,9 @@ fn remove_trailing_zeros(hex_string: &str) -> String {
 
     fn block_to_string_minimal(block: &Block<TxHash>) -> String {
         format!(
-            "[{},{},{}]", 
-            block.number, 
-            remove_leading_zeros(h256_to_string(block.hash)), 
+            "[{},{},{}]",
+            block.number,
+            remove_leading_zeros(h256_to_string(block.hash)),
             remove_leading_zeros(h256_to_string(block.parent_hash))
         )
     }
@@ -468,10 +495,10 @@ fn remove_trailing_zeros(hex_string: &str) -> String {
             max_block_cached: 32,
             batch_size: 10,
             block_back_count: 5,
-            filter: Filter { 
-                address: None, 
-                topics: None
-            }
+            filter: Filter {
+                address: None,
+                topics: None,
+            },
         };
 
         let mut cache = BlockCache {
@@ -481,36 +508,75 @@ fn remove_trailing_zeros(hex_string: &str) -> String {
             blocks_map: HashMap::new(),
         };
 
-        let mut block = mock_provider1.get_block(BlockIdentifier::Number(1)).await.unwrap();
+        let mut block = mock_provider1
+            .get_block(BlockIdentifier::Number(1))
+            .await
+            .unwrap();
         info!("Starting with block {}", block);
 
         let result = cache.initialize(block).await;
         assert_eq!(block_to_string_minimal(&result.unwrap()), "[1,0x1,0x0]");
 
-        block = mock_provider1.get_block(BlockIdentifier::Number(2)).await.unwrap();
+        block = mock_provider1
+            .get_block(BlockIdentifier::Number(2))
+            .await
+            .unwrap();
         let handle_block_result = cache.handle_block(block).await.unwrap();
-        assert_eq!(block_to_string_minimal(&handle_block_result.0), "[2,0x2,0x1]");
+        assert_eq!(
+            block_to_string_minimal(&handle_block_result.0),
+            "[2,0x2,0x1]"
+        );
 
-        block = mock_provider1.get_block(BlockIdentifier::Number(3)).await.unwrap();
+        block = mock_provider1
+            .get_block(BlockIdentifier::Number(3))
+            .await
+            .unwrap();
         let handle_block_result = cache.handle_block(block).await.unwrap();
-        assert_eq!(block_to_string_minimal(&handle_block_result.0), "[3,0x3,0x2]");
+        assert_eq!(
+            block_to_string_minimal(&handle_block_result.0),
+            "[3,0x3,0x2]"
+        );
 
-        block = mock_provider2.get_block(BlockIdentifier::Number(3)).await.unwrap();
+        block = mock_provider2
+            .get_block(BlockIdentifier::Number(3))
+            .await
+            .unwrap();
         let handle_block_result = cache.handle_block(block).await.unwrap();
-        assert_eq!(block_to_string_minimal(&handle_block_result.0), "[3,0x23,0x2]");
+        assert_eq!(
+            block_to_string_minimal(&handle_block_result.0),
+            "[3,0x23,0x2]"
+        );
 
-        block = mock_provider1.get_block(BlockIdentifier::Number(3)).await.unwrap();
+        block = mock_provider1
+            .get_block(BlockIdentifier::Number(3))
+            .await
+            .unwrap();
         let handle_block_result = cache.handle_block(block).await.unwrap();
-        assert_eq!(block_to_string_minimal(&handle_block_result.0), "[3,0x3,0x2]");
+        assert_eq!(
+            block_to_string_minimal(&handle_block_result.0),
+            "[3,0x3,0x2]"
+        );
 
-        block = mock_provider1.get_block(BlockIdentifier::Number(4)).await.unwrap();
+        block = mock_provider1
+            .get_block(BlockIdentifier::Number(4))
+            .await
+            .unwrap();
         let handle_block_result = cache.handle_block(block).await.unwrap();
-        assert_eq!(block_to_string_minimal(&handle_block_result.0), "[4,0x4,0x3]");
+        assert_eq!(
+            block_to_string_minimal(&handle_block_result.0),
+            "[4,0x4,0x3]"
+        );
 
         cache.rpc_provider = &mock_provider2;
-        block = mock_provider2.get_block(BlockIdentifier::Number(5)).await.unwrap();
+        block = mock_provider2
+            .get_block(BlockIdentifier::Number(5))
+            .await
+            .unwrap();
         let handle_block_result = cache.handle_block(block).await.unwrap();
-        assert_eq!(block_to_string_minimal(&handle_block_result.0), "[5,0x25,0x24]");
+        assert_eq!(
+            block_to_string_minimal(&handle_block_result.0),
+            "[5,0x25,0x24]"
+        );
 
         assert_eq!(true, true);
     }
