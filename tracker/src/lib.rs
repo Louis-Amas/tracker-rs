@@ -166,23 +166,24 @@ pub mod tracker {
             Err("Did not find common ancestor".to_string())
         }
 
-        async fn handle_batch_block(
+        pub async fn handle_batch_block(
             &mut self,
-            from: Block<TxHash>,
-            to: Block<TxHash>,
+            from: &u64,
+            to_number: &u64,
             fill_cache: bool,
         ) -> Result<Vec<&Log>, String> {
+            let mut from_number = from.clone();
+
             event!(
                 Level::DEBUG,
                 "handle_batch_block {} {} {}",
-                from,
-                to,
+                from_number,
+                to_number,
                 fill_cache
             );
-            let mut from_number = from.number.as_u64() + 1;
             let mut to_number = std::cmp::min(
                 from_number + self.options.batch_size as u64,
-                to.number.as_u64(),
+                to_number.clone(),
             );
             let mut aggregated_logs: Vec<&Log> = Vec::new();
             loop {
@@ -223,16 +224,16 @@ pub mod tracker {
                 }
 
                 self.last_block = Some(to_number);
-                from_number = to.number.as_u64();
+                from_number = to_number;
 
                 event!(Level::DEBUG, "New last block {}", to_number);
 
                 to_number = std::cmp::min(
                     from_number + self.options.batch_size as u64,
-                    to.number.as_u64(),
+                    to_number,
                 );
 
-                if from_number == to.number.as_u64() {
+                if from_number == to_number {
                     break;
                 }
             }
@@ -298,11 +299,11 @@ pub mod tracker {
 
             let logs = self
                 .handle_batch_block(
-                    self.blocks_map
+                    &(self.blocks_map
                         .get(&self.last_block.unwrap())
                         .unwrap()
-                        .clone(),
-                    block.clone(),
+                        .number.as_u64() + 1),
+                    &block.number.as_u64(),
                     true,
                 )
                 .await?;
@@ -319,7 +320,7 @@ mod tests {
     use super::tracker::*;
     use async_trait::async_trait;
     use ethers::types::{Log, TxHash, H256, U256, U64};
-    use tracing::{debug, info};
+    use tracing::debug;
     use tracing_test::traced_test;
 
     #[derive(Clone, Debug)]
@@ -487,10 +488,11 @@ mod tests {
         }
     }
     fn h256_to_string(hash: H256) -> String {
-        let str = hash.as_bytes();
-        let num_strings: Vec<String> = str.iter().map(|&byte| byte.to_string()).collect();
-
-        format!("0x{}", num_strings.join(""))
+         hash.as_bytes()
+            .iter()
+            .map(|byte| format!("{:02X}", byte))
+            .collect::<Vec<_>>()
+            .join("") // Combine the hexadecimal values into a single strin
     }
 
     fn block_to_string_minimal(block: &Block<TxHash>) -> String {
@@ -518,10 +520,29 @@ mod tests {
         )
     }
 
+    fn concatenated_logs(logs: Vec<&Log>) -> String {
+        logs.iter()
+            .enumerate()
+            .fold(String::new(), |acc, (index, &log)| {
+                if index == 0 {
+                    log_to_string(&log)
+                } else {
+                    acc + "|" + &log_to_string(&log)
+                }
+            })
+    }
+
     enum ScenarioTask<'a> {
         SetCacheProvider(&'a MockRpcProvider<TxHash>),
         InitializeCache(&'a Block<TxHash>),
         InjectBlockFromProvider((&'a MockRpcProvider<TxHash>, BlockIdentifier, String)),
+        InjectRangeFromProvider(
+            (
+                u64,
+                u64,
+                String,
+            ),
+        ),
     }
 
     async fn test_scneario<'a>(
@@ -545,22 +566,25 @@ mod tests {
                     let (returned_block, last_safe_block, logs) =
                         cache.handle_block(block).await.unwrap();
 
-                    let concatenated_logs = logs
-                        .iter()
-                        .enumerate()
-                        .fold(String::new(), |acc, (index, &log)| {
-                            if index == 0 {
-                                log_to_string(log)
-                            } else {
-                                acc + "|" + &log_to_string(log)
-                            }
-                        });
+                    let logs = concatenated_logs(logs);
 
                     let _result = format!(
                         "{},{},[{}]",
                         block_to_string_minimal(&returned_block),
                         block_option_to_string(last_safe_block),
-                        concatenated_logs
+                        logs,
+                    );
+
+                    assert_eq!(_result, expected_result.clone());
+                }
+                ScenarioTask::InjectRangeFromProvider((from, to, expected_result)) => {
+                    let logs = cache.handle_batch_block(from, to, false).await.unwrap();
+
+                    let logs = concatenated_logs(logs);
+
+                    let _result = format!(
+                        "[{}]",
+                        logs,
                     );
 
                     assert_eq!(_result, expected_result.clone());
@@ -571,7 +595,7 @@ mod tests {
 
     #[traced_test]
     #[tokio::test]
-    async fn test_scnearios() {
+    async fn test_scnearios_with_reorg_protection() {
         let mock_provider1 = generate_mock_provider(1, 10, 1, 5, 1);
         let mock_provider2 = generate_mock_provider(1, 10, 1, 2, 2);
 
@@ -610,17 +634,59 @@ mod tests {
             ScenarioTask::InjectBlockFromProvider((
                 &mock_provider1,
                 BlockIdentifier::Number(6),
-                "[6,0x16,0x5],None,[6,0x16,0]".to_string(),
+                "[6,0x106,0x5],None,[6,0x106,0]".to_string(),
             )),
             ScenarioTask::SetCacheProvider(&mock_provider2),
             ScenarioTask::InjectBlockFromProvider((
                 &mock_provider2,
                 BlockIdentifier::Number(5),
-                "[5,0x25,0x24],[2,0x2,0x1],[3,0x23,0|4,0x24,0|5,0x25,0]".to_string(),
+                "[5,0x205,0x204],[2,0x2,0x1],[3,0x203,0|4,0x204,0|5,0x205,0]".to_string(),
+            )),
+            ScenarioTask::SetCacheProvider(&mock_provider1),
+            ScenarioTask::InjectBlockFromProvider((
+                &mock_provider1,
+                BlockIdentifier::Number(7),
+                "[7,0x107,0x106],[2,0x2,0x1],[3,0x3,0|4,0x4,0|5,0x5,0|6,0x106,0|7,0x107,0]".to_string(),
             )),
         ];
 
         test_scneario(options, &mock_provider1, tasks).await;
     }
 
+    #[traced_test]
+    #[tokio::test]
+    async fn test_scnearios_with_range() {
+        let mock_provider1 = generate_mock_provider(1, 12, 1, 100, 1);
+
+        let options = CacheOptions {
+            max_block_cached: 32,
+            batch_size: 10,
+            block_back_count: 5,
+            filter: Filter {
+                address: None,
+                topics: None,
+            },
+        };
+
+        let initial_block = mock_provider1
+            .get_block(&BlockIdentifier::Number(1))
+            .await
+            .unwrap();
+
+        let tasks: Vec<ScenarioTask> = vec![
+            ScenarioTask::InitializeCache(&initial_block),
+            ScenarioTask::InjectRangeFromProvider((
+                2,
+                4,
+                "[2,0x2,0|3,0x3,0|4,0x4,0]".to_string(),
+            )),
+            ScenarioTask::InjectRangeFromProvider((
+                5,
+                10,
+                "[5,0x5,0|6,0x6,0|7,0x7,0|8,0x8,0|9,0x9,0|10,0xA,0]".to_string(),
+            )),
+        ];
+
+        test_scneario(options, &mock_provider1, tasks).await;
+    }
 }
