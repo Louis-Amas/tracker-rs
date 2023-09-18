@@ -48,7 +48,7 @@ pub mod tracker {
         pub topics: Option<[Option<Topic>; 4]>,
     }
 
-    pub struct ChainCacheOptions {
+    pub struct CacheOptions {
         pub max_block_cached: u32,
 
         pub batch_size: u32,
@@ -61,7 +61,7 @@ pub mod tracker {
     pub struct BlockCache<'a, Provider: BlockProvider<TxHash>> {
         pub rpc_provider: &'a Provider,
 
-        pub options: ChainCacheOptions,
+        pub options: CacheOptions,
 
         pub last_block: Option<u64>,
 
@@ -80,7 +80,7 @@ pub mod tracker {
 
     #[async_trait]
     pub trait BlockProvider<TX>: Debug + Send + Sync {
-        async fn get_block(&self, number: BlockIdentifier) -> Result<Block<TX>, String>;
+        async fn get_block(&self, number: &BlockIdentifier) -> Result<Block<TX>, String>;
 
         async fn get_minimal_block_batch(
             &self,
@@ -96,10 +96,20 @@ pub mod tracker {
     }
 
     impl<'a, Provider: BlockProvider<TxHash>> BlockCache<'a, Provider> {
-        pub async fn initialize(&mut self, block: Block<TxHash>) -> Result<Block<TxHash>, String> {
+
+        pub fn new(rpc_provider: &'a Provider, options: CacheOptions) -> Self {
+            BlockCache {
+                rpc_provider,
+                options,
+                last_block: None,
+                blocks_map: HashMap::new(),
+            }
+        }
+
+        pub async fn initialize(&mut self, block: &Block<TxHash>) -> Result<(), String> {
             let rpc_block = self
                 .rpc_provider
-                .get_block(BlockIdentifier::Hash(block.hash))
+                .get_block(&BlockIdentifier::Hash(block.hash))
                 .await?;
 
             if rpc_block.hash != block.hash {
@@ -114,7 +124,7 @@ pub mod tracker {
 
             event!(Level::INFO, "Initialized with block {}", block);
 
-            Ok(block)
+            Ok(())
         }
 
         async fn find_common_ancestor(&self) -> Result<&Block<TxHash>, String> {
@@ -247,6 +257,7 @@ pub mod tracker {
             block: Block<TxHash>,
         ) -> Result<(Block<TxHash>, Option<Block<TxHash>>, Vec<&Log>), String> {
             event!(Level::DEBUG, "Handle block {}", block);
+
             let last_block = self.get_last_block()?;
 
             let mut rollback_block: Option<Block<TxHash>> = None;
@@ -370,7 +381,7 @@ mod tests {
 
     #[async_trait]
     impl BlockProvider<TxHash> for MockRpcProvider<TxHash> {
-        async fn get_block(&self, number: BlockIdentifier) -> Result<Block<TxHash>, String> {
+        async fn get_block(&self, number: &BlockIdentifier) -> Result<Block<TxHash>, String> {
             match number {
                 BlockIdentifier::Latest => Ok(self.latest.clone()),
                 BlockIdentifier::Number(block_number) => Ok(self
@@ -484,6 +495,75 @@ mod tests {
         )
     }
 
+    fn block_option_to_string(block: Option<Block<TxHash>>) -> String {
+        match block {
+            None => "None".to_string(),
+            Some(blk) => {
+                block_to_string_minimal(&blk)
+            }
+        }
+    }
+
+    enum ScenarioTask<'a> {
+        SetCacheProvider(&'a MockRpcProvider<TxHash>),
+        InitializeCache(&'a Block<TxHash>),
+        InjectBlockFromProvider((&'a MockRpcProvider<TxHash>, BlockIdentifier, String)),
+    }
+
+    async fn test_scneario<'a>(options: CacheOptions, rpc_provider: &MockRpcProvider<TxHash>, tasks: Vec<ScenarioTask<'a>>) {
+        let mut cache = BlockCache::new(rpc_provider, options);
+
+        for task in tasks.iter() {
+            match task {
+               ScenarioTask::SetCacheProvider(provider) => {
+                   cache.rpc_provider = provider;
+               },
+               ScenarioTask::InitializeCache(block) => {
+                    cache.initialize(block).await.unwrap();
+               },
+               ScenarioTask::InjectBlockFromProvider((provider, identifier, expected_result)) => {
+                   let block = provider.get_block(identifier).await.unwrap();
+                   let (returned_block, rollback_block, logs) = cache.handle_block(block).await.unwrap();
+
+                   let _result = format!("{},{}", block_to_string_minimal(&returned_block), block_option_to_string(rollback_block));
+
+                   assert_eq!(_result, expected_result.clone());
+               }
+            }
+        }
+    }
+
+    #[traced_test]
+    #[tokio::test]
+    async fn test_2() {
+        let mock_provider1 = generate_mock_provider(1, 10, 2, 5, 1);
+        let _mock_provider2 = generate_mock_provider(1, 10, 1, 2, 2);
+
+        let options = CacheOptions {
+            max_block_cached: 32,
+            batch_size: 10,
+            block_back_count: 5,
+            filter: Filter {
+                address: None,
+                topics: None,
+            },
+        };
+
+        let initial_block = mock_provider1.get_block(&BlockIdentifier::Number(1)).await.unwrap();
+
+        let tasks: Vec<ScenarioTask> = vec!(
+            ScenarioTask::InitializeCache(&initial_block),
+            ScenarioTask::InjectBlockFromProvider((&mock_provider1, BlockIdentifier::Number(2), "[2,0x2,0x1],None".to_string()))
+        );
+
+        test_scneario(
+            options,
+            &mock_provider1,
+            tasks,
+        ).await;
+    }
+
+
     #[traced_test]
     #[tokio::test]
     async fn test() {
@@ -491,7 +571,7 @@ mod tests {
 
         let mock_provider2 = generate_mock_provider(1, 10, 1, 2, 2);
 
-        let options = ChainCacheOptions {
+        let options = CacheOptions {
             max_block_cached: 32,
             batch_size: 10,
             block_back_count: 5,
@@ -509,16 +589,15 @@ mod tests {
         };
 
         let mut block = mock_provider1
-            .get_block(BlockIdentifier::Number(1))
+            .get_block(&BlockIdentifier::Number(1))
             .await
             .unwrap();
         info!("Starting with block {}", block);
 
-        let result = cache.initialize(block).await;
-        assert_eq!(block_to_string_minimal(&result.unwrap()), "[1,0x1,0x0]");
+        let _result = cache.initialize(&block).await;
 
         block = mock_provider1
-            .get_block(BlockIdentifier::Number(2))
+            .get_block(&BlockIdentifier::Number(2))
             .await
             .unwrap();
         let handle_block_result = cache.handle_block(block).await.unwrap();
@@ -528,7 +607,7 @@ mod tests {
         );
 
         block = mock_provider1
-            .get_block(BlockIdentifier::Number(3))
+            .get_block(&BlockIdentifier::Number(3))
             .await
             .unwrap();
         let handle_block_result = cache.handle_block(block).await.unwrap();
@@ -538,7 +617,7 @@ mod tests {
         );
 
         block = mock_provider2
-            .get_block(BlockIdentifier::Number(3))
+            .get_block(&BlockIdentifier::Number(3))
             .await
             .unwrap();
         let handle_block_result = cache.handle_block(block).await.unwrap();
@@ -548,7 +627,7 @@ mod tests {
         );
 
         block = mock_provider1
-            .get_block(BlockIdentifier::Number(3))
+            .get_block(&BlockIdentifier::Number(3))
             .await
             .unwrap();
         let handle_block_result = cache.handle_block(block).await.unwrap();
@@ -558,7 +637,7 @@ mod tests {
         );
 
         block = mock_provider1
-            .get_block(BlockIdentifier::Number(4))
+            .get_block(&BlockIdentifier::Number(4))
             .await
             .unwrap();
         let handle_block_result = cache.handle_block(block).await.unwrap();
@@ -569,7 +648,7 @@ mod tests {
 
         cache.rpc_provider = &mock_provider2;
         block = mock_provider2
-            .get_block(BlockIdentifier::Number(5))
+            .get_block(&BlockIdentifier::Number(5))
             .await
             .unwrap();
         let handle_block_result = cache.handle_block(block).await.unwrap();
