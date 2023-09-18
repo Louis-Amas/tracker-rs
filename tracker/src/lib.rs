@@ -142,14 +142,16 @@ pub mod tracker {
 
             event!(
                 Level::DEBUG,
-                "find_common_ancestor last_block: {} min_block_back {}",
+                "find_common_ancestor last_block: {} min_block_back {} blocks_map length {} {:?}",
                 last_block,
-                min_block_back
+                min_block_back,
+                self.blocks_map.len(),
+                self.blocks_map,
             );
             let from = last_block - min_block_back as u64;
             let batch = self
                 .rpc_provider
-                .get_minimal_block_batch(from, last_block - 1)
+                .get_minimal_block_batch(from, last_block)
                 .await?;
 
             for block in batch.iter().rev() {
@@ -277,14 +279,14 @@ pub mod tracker {
 
             /* clean cache from reorged blocks */
             if let Some(last_safe_block) = rollback_block.as_ref() {
-                let new_last_block_number = last_block.number.as_u64();
+                let new_last_block_number = last_safe_block.number.as_u64();
 
-                for bn in (last_safe_block.number.as_u64() + 1)..last_block.number.as_u64() {
-                    event!(Level::DEBUG, "Remove block with number > {}", bn);
+                for bn in (last_safe_block.number.as_u64() + 1)..last_block.number.as_u64() + 1 {
+                    event!(Level::DEBUG, "Remove block with number = {}", bn);
                     self.blocks_map.remove(&bn);
                 }
 
-                event!(Level::DEBUG, "set last block number {}", last_safe_block);
+                event!(Level::DEBUG, "set last block number {} length {}", last_safe_block, self.blocks_map.len());
                 self.last_block = Some(new_last_block_number);
                 self.blocks_map
                     .insert(new_last_block_number, last_safe_block.clone());
@@ -514,6 +516,7 @@ mod tests {
         let mut cache = BlockCache::new(rpc_provider, options);
 
         for task in tasks.iter() {
+            debug!("new task");
             match task {
                ScenarioTask::SetCacheProvider(provider) => {
                    cache.rpc_provider = provider;
@@ -523,9 +526,9 @@ mod tests {
                },
                ScenarioTask::InjectBlockFromProvider((provider, identifier, expected_result)) => {
                    let block = provider.get_block(identifier).await.unwrap();
-                   let (returned_block, rollback_block, logs) = cache.handle_block(block).await.unwrap();
+                   let (returned_block, last_safe_block, logs) = cache.handle_block(block).await.unwrap();
 
-                   let _result = format!("{},{}", block_to_string_minimal(&returned_block), block_option_to_string(rollback_block));
+                   let _result = format!("{},{}", block_to_string_minimal(&returned_block), block_option_to_string(last_safe_block));
 
                    assert_eq!(_result, expected_result.clone());
                }
@@ -537,7 +540,7 @@ mod tests {
     #[tokio::test]
     async fn test_2() {
         let mock_provider1 = generate_mock_provider(1, 10, 2, 5, 1);
-        let _mock_provider2 = generate_mock_provider(1, 10, 1, 2, 2);
+        let mock_provider2 = generate_mock_provider(1, 10, 1, 2, 2);
 
         let options = CacheOptions {
             max_block_cached: 32,
@@ -553,7 +556,13 @@ mod tests {
 
         let tasks: Vec<ScenarioTask> = vec!(
             ScenarioTask::InitializeCache(&initial_block),
-            ScenarioTask::InjectBlockFromProvider((&mock_provider1, BlockIdentifier::Number(2), "[2,0x2,0x1],None".to_string()))
+            ScenarioTask::InjectBlockFromProvider((&mock_provider1, BlockIdentifier::Number(2), "[2,0x2,0x1],None".to_string())),
+            ScenarioTask::InjectBlockFromProvider((&mock_provider1, BlockIdentifier::Number(3), "[3,0x3,0x2],None".to_string())),
+            ScenarioTask::InjectBlockFromProvider((&mock_provider1, BlockIdentifier::Number(5), "[5,0x5,0x4],[3,0x3,0x2]".to_string())),
+            ScenarioTask::InjectBlockFromProvider((&mock_provider1, BlockIdentifier::Number(6), "[6,0x16,0x5],None".to_string())),
+            ScenarioTask::SetCacheProvider(&mock_provider2),
+            ScenarioTask::InjectBlockFromProvider((&mock_provider2, BlockIdentifier::Number(3), "[3,0x23,0x2],[2,0x2,0x1]".to_string())),
+            ScenarioTask::InjectBlockFromProvider((&mock_provider2, BlockIdentifier::Number(6), "[6,0x26,0x25],[3,0x23,0x2]".to_string())),
         );
 
         test_scneario(
