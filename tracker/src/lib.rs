@@ -10,7 +10,7 @@ pub mod tracker {
 
     use ethers::{
         core::types::TxHash,
-        types::{Address, Bloom, Log, Topic, ValueOrArray, H256, H64, U64},
+        types::{Address, Bloom, Log, Topic, ValueOrArray, H256, H64, U64, BlockId, BlockNumber},
     };
 
     #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -21,7 +21,7 @@ pub mod tracker {
 
         pub number: U64,
 
-        pub transactions: Option<Vec<TX>>,
+        pub transactions: Vec<TX>,
 
         pub nonce: Option<H64>,
 
@@ -34,9 +34,7 @@ pub mod tracker {
                 self.hash,
                 self.parent_hash,
                 self.number,
-                self.transactions.as_ref()
-                    .map(|tx| tx.len().to_string())
-                    .unwrap_or_else(|| "No transactions".to_string()), 
+                self.transactions.len(),
                 self.nonce.as_ref().map(|nonce| nonce.to_string()).unwrap_or("No nonce".to_string()), 
                 self.logs_bloom.as_ref().map(|bloom| bloom.to_string()).unwrap_or("No bloom".to_string()))
         }
@@ -72,6 +70,16 @@ pub mod tracker {
         Latest,
         Number(u64),
         Hash(H256),
+    }
+
+    impl BlockIdentifier {
+        pub fn to_block_id(&self) -> BlockId {
+            match self {
+                BlockIdentifier::Latest => BlockId::Number(BlockNumber::Latest),
+                BlockIdentifier::Number(number) => BlockId::Number(BlockNumber::Number(U64([number.clone()]))),
+                BlockIdentifier::Hash(hash) => BlockId::Hash(hash.clone()),
+            } 
+        }
     }
 
     pub enum FilterBlockOption {
@@ -355,7 +363,7 @@ mod tests {
                 number: U64([bn; 1]),
                 parent_hash,
                 hash,
-                transactions: None,
+                transactions: Vec::new(),
                 nonce: None,
                 logs_bloom: None,
             };
