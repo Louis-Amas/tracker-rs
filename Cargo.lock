@@ -3286,6 +3286,7 @@ dependencies = [
 name = "tracker-providers"
 version = "0.0.1"
 dependencies = [
+ "anvil-helpers",
  "async-trait",
  "ethers",
  "ethers-providers",

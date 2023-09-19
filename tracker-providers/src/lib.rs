@@ -10,7 +10,7 @@ pub mod providers {
 
 
     #[derive(Clone, Debug)]
-    struct HttpProvider {
+    pub struct HttpProvider {
         provider: Provider<Http>,
         retries: u32,
         retry_delay_ms: u64,
@@ -73,4 +73,37 @@ pub mod providers {
             Err("".to_string())
         }
     }
+}
+
+#[cfg(test)]
+mod test {
+
+    use std::time::Duration;
+
+    use super::providers::HttpProvider;
+    use anvil_helpers::anvil_helpers::Anvil;
+    use tracing_test::traced_test;
+    use tracker::tracker::{BlockProvider, BlockIdentifier};
+    use tokio::time::sleep;
+
+    #[traced_test]
+    #[tokio::test]
+    async fn test() {
+        let anvil = Anvil::new(None, Some(1));
+
+        let http_url = format!("http://127.0.0.1:{}", anvil.port);
+
+        let http_provider = HttpProvider::new(http_url, 5, 200);
+        let block = http_provider.get_block(&BlockIdentifier::Latest).await.unwrap();
+
+        assert_eq!(block.number.as_u64(), 0);
+
+        sleep(Duration::from_secs(2)).await;
+
+        let block = http_provider.get_block(&BlockIdentifier::Latest).await.unwrap();
+        assert_eq!(block.number.as_u64() > 0, true);
+
+        anvil.kill();
+    }
+
 }

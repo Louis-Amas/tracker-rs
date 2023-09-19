@@ -55,7 +55,7 @@ pub mod anvil_helpers {
     ];
 
     impl Anvil {
-        pub fn new(port: Option<u16>) -> Self {
+        pub fn new(port: Option<u16>, block_time_s: Option<u32>) -> Self {
             event!(Level::DEBUG, "New anvil");
 
             let port = port.unwrap_or(8545);
@@ -65,15 +65,21 @@ pub mod anvil_helpers {
 
             let thread = thread::spawn(move || {
                 let mut cmd = Command::new("anvil");
-                cmd.arg("-p");
 
+                cmd.arg("-p");
                 cmd.arg(format!("{}", port));
+
+                if block_time_s.is_some() {
+                    cmd.arg("--block-time");
+                    cmd.arg(format!("{}", block_time_s.unwrap()));
+                } else {
+                    cmd.arg("--no-mining");
+                }
 
                 cmd.stdin(Stdio::piped());
                 cmd.stdout(Stdio::piped());
                 cmd.stderr(Stdio::piped());
 
-                event!(Level::DEBUG, "before spawing");
                 match cmd.spawn() {
                     Err(error) => Err(error.to_string()),
                     Ok(mut child) => {
@@ -81,10 +87,10 @@ pub mod anvil_helpers {
                             sleep(Duration::from_millis(500));
                         }
 
-                        sender_child_to_parent.send(true).unwrap();
-                        receiver_parent_to_child.recv().unwrap();
-                        child.kill().unwrap();
-                        Ok(child.wait().unwrap())
+                        sender_child_to_parent.send(true).map_err(|err| err.to_string())?;
+                        receiver_parent_to_child.recv().map_err(|err| err.to_string())?;
+                        child.kill().map_err(|err| err.to_string())?;
+                        Ok(child.wait().map_err(|err| err.to_string())?)
                     },
                 }
             });
@@ -116,7 +122,7 @@ mod tests {
     #[test]
     #[traced_test]
     fn test() {
-        let anvil = Anvil::new(None);
+        let anvil = Anvil::new(None, None);
 
         assert_eq!(anvil.port, 8545);
 
