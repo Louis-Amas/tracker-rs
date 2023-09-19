@@ -1,19 +1,23 @@
 pub mod providers {
 
+    use std::time::Duration;
+
     use async_trait::async_trait;
-    use ethers::types::{TxHash, Log, BlockId};
+    use ethers::types::{TxHash, Log};
     use ethers_providers::{Http, Provider, Middleware};
     use tracker::tracker::{BlockProvider, Block, BlockIdentifier, FilterBlockOption, Filter};
+    use tokio::time;
+
 
     #[derive(Clone, Debug)]
     struct HttpProvider {
         provider: Provider<Http>,
         retries: u32,
-        retry_delay_ms: u32,
+        retry_delay_ms: u64,
     }
 
     impl HttpProvider {
-        pub fn new(url: String, retries: u32, retry_delay_ms: u32) -> Self {
+        pub fn new(url: String, retries: u32, retry_delay_ms: u64) -> Self {
             HttpProvider {
                 provider: Provider::<Http>::try_from(url).unwrap(),
                 retries,
@@ -47,6 +51,7 @@ pub mod providers {
                         return Ok(ethers_block_to_tracker_block(block.unwrap())?);
                     }
                 }
+                time::sleep(Duration::from_millis(self.retry_delay_ms)).await; 
             }
                 
             Err(format!("Failed {} times, last error is {}", self.retries, error))
