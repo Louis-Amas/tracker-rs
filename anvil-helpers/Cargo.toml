@@ -1,0 +1,11 @@
+[package]
+name = "anvil-helpers"
+version = "0.0.1" 
+edition = "2021"
+authors = ["Louis Amas <amaslouis@protonmail.com>"]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+tracing = "0.1.37"
+tracing-test = "0.2.4"
