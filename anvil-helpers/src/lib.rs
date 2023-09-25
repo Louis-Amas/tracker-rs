@@ -1,5 +1,6 @@
 pub mod anvil_helpers {
     use std::collections::HashMap;
+    use std::fs;
     use std::sync::mpsc::{self, Sender};
 
     use std::process::{Command, ExitStatus, Stdio};
@@ -8,6 +9,8 @@ pub mod anvil_helpers {
     use regex::Regex;
     use std::net::TcpStream;
     use std::time::Duration;
+
+    use serde_json::{from_str, Value};
     use tracing::{event, Level};
 
     pub struct Account {
@@ -16,8 +19,14 @@ pub mod anvil_helpers {
     }
 
     pub struct ContractInfo {
+        pub path_forge_dir: String,
         pub path: String,
         pub name: String,
+    }
+
+    pub struct DeployedContract {
+        pub abi: String,
+        pub address: String,
     }
 
     pub struct Anvil {
@@ -25,7 +34,7 @@ pub mod anvil_helpers {
         pub accounts: [Account; 6],
         thread: JoinHandle<Result<ExitStatus, String>>,
         sender_parent_to_child: Sender<bool>,
-        pub contracts_map: HashMap<String, String>,
+        pub contracts_map: HashMap<String,  DeployedContract>,
     }
 
     pub fn is_port_open(host: &str, port: u16) -> bool {
@@ -66,7 +75,7 @@ pub mod anvil_helpers {
         pub fn new_contract(&self, contract: &ContractInfo) -> Result<String, String> {
             let mut cmd = Command::new("forge");
 
-            cmd.current_dir("./contracts/");
+            cmd.current_dir(contract.path_forge_dir.clone());
             cmd.arg("create");
             cmd.arg("--rpc-url");
             cmd.arg(format!("http://127.0.0.1:{}", self.port));
@@ -151,7 +160,16 @@ pub mod anvil_helpers {
             for contract in contracts.into_iter() {
                 let addr = anvil.new_contract(&contract).unwrap();
 
-                anvil.contracts_map.insert(contract.name, addr);
+                let filename = contract.path.split('/').last().unwrap();
+                let artifact = fs::read_to_string(format!("{}out/{}/{}.json", contract.path_forge_dir, filename, contract.name)).unwrap();
+
+                let value: Value = from_str(&artifact).unwrap();
+
+
+                anvil.contracts_map.insert(contract.name, DeployedContract{
+                    address: addr,
+                    abi: value["abi"].to_string(),
+                });
             } 
 
             anvil
@@ -190,6 +208,7 @@ mod tests {
     fn test_deploy_multicall2() {
         let anvil = Anvil::new(None, Some(2), vec![
             ContractInfo {
+                path_forge_dir: "./contracts/anvil-helpers-contracts/".to_string(),
                 path: "src/Multicall2.sol".to_string(),
                 name: "Multicall2".to_string(),
             }]
