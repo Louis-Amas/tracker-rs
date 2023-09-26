@@ -8,6 +8,7 @@ pub mod providers {
     use tracker::tracker::{BlockProvider, Block, BlockIdentifier, FilterBlockOption, Filter};
     use tokio::time;
 
+
     #[derive(Clone, Debug)]
     pub struct HttpProvider {
         provider: Provider<Http>,
@@ -80,19 +81,17 @@ mod test {
     use std::time::Duration;
 
     use super::providers::HttpProvider;
+    use anvil_helpers::anvil_helpers::Anvil;
     use tracing_test::traced_test;
     use tracker::tracker::{BlockProvider, BlockIdentifier};
     use tokio::time::sleep;
-    use ethers::core::utils::Anvil;
 
     #[traced_test]
     #[tokio::test]
     async fn test() {
-        let anvil = Anvil::new()
-            .block_time(1 as u64)
-            .spawn();
+        let anvil = Anvil::new(None, Some(1));
 
-        let http_url = format!("http://127.0.0.1:{}", anvil.port());
+        let http_url = format!("http://127.0.0.1:{}", anvil.port);
 
         let http_provider = HttpProvider::new(http_url, 5, 200);
         let block = http_provider.get_block(&BlockIdentifier::Latest).await.unwrap();
@@ -103,6 +102,8 @@ mod test {
 
         let block = http_provider.get_block(&BlockIdentifier::Latest).await.unwrap();
         assert_eq!(block.number.as_u64() > 0, true);
+
+        anvil.kill();
     }
 
 }
