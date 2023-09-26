@@ -78,20 +78,27 @@ pub mod providers {
 #[cfg(test)]
 mod test {
 
-    use std::time::Duration;
+    use std::{time::Duration, sync::Arc};
 
     use super::providers::HttpProvider;
-    use anvil_helpers::anvil_helpers::Anvil;
     use tracing_test::traced_test;
     use tracker::tracker::{BlockProvider, BlockIdentifier};
     use tokio::time::sleep;
+    use ethers::{core::utils::Anvil, utils::AnvilInstance, providers::{Provider, Http}, middleware::SignerMiddleware, signers::{LocalWallet, Wallet, Signer}};
+
+    fn setup() -> AnvilInstance {
+        Anvil::new()
+            .block_time(1 as u64)
+            .spawn()
+    }
 
     #[traced_test]
     #[tokio::test]
     async fn test() {
-        let anvil = Anvil::new(None, Some(1));
 
-        let http_url = format!("http://127.0.0.1:{}", anvil.port);
+        let anvil = setup();
+    
+        let http_url = format!("http://127.0.0.1:{}", anvil.port());
 
         let http_provider = HttpProvider::new(http_url, 5, 200);
         let block = http_provider.get_block(&BlockIdentifier::Latest).await.unwrap();
@@ -102,8 +109,23 @@ mod test {
 
         let block = http_provider.get_block(&BlockIdentifier::Latest).await.unwrap();
         assert_eq!(block.number.as_u64() > 0, true);
-
-        anvil.kill();
     }
+
+    #[traced_test]
+    #[tokio::test]
+    async fn test_deploy_multicall2() {
+        let anvil = setup();
+
+        let mut wallet: LocalWallet = anvil.keys()[0].clone().into();
+        wallet = wallet.with_chain_id(anvil.chain_id());
+
+        let provider = Provider::<Http>::try_from(anvil.endpoint()).unwrap().interval(Duration::from_millis(10u64));
+
+        let client = SignerMiddleware::new(provider, wallet);
+        let client = Arc::new(client);
+
+    }
+
+
 
 }

@@ -1,3 +1,6 @@
 [submodule "anvil-helpers/contracts/anvil-helpers-contracts"]
 	path = anvil-helpers/contracts/anvil-helpers-contracts
 	url = git@github.com:Louis-Amas/anvil-helpers-contracts.git
+[submodule "tracker-providers/contracts/anvil-helpers-contracts"]
+	path = tracker-providers/contracts/anvil-helpers-contracts
+	url = git@github.com:Louis-Amas/anvil-helpers-contracts.git
