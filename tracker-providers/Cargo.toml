@@ -14,4 +14,3 @@ tokio =  { version = "1.29.1", features = ["macros", "rt", "rt-multi-thread"]}
 tracing = "0.1.37"
 tracing-test = "0.2.4"
 tracker = { path = "../tracker" }
-anvil-helpers = { path = "../anvil-helpers" }
