@@ -8,7 +8,6 @@ pub mod providers {
     use tracker::tracker::{BlockProvider, Block, BlockIdentifier, FilterBlockOption, Filter};
     use tokio::time;
 
-
     #[derive(Clone, Debug)]
     pub struct HttpProvider {
         provider: Provider<Http>,
@@ -78,13 +77,19 @@ pub mod providers {
 #[cfg(test)]
 mod test {
 
-    use std::{time::Duration, sync::Arc};
+    use std::{time::Duration, sync::Arc, path::PathBuf};
 
     use super::providers::HttpProvider;
+    use tracing::debug;
     use tracing_test::traced_test;
     use tracker::tracker::{BlockProvider, BlockIdentifier};
     use tokio::time::sleep;
-    use ethers::{core::utils::Anvil, utils::AnvilInstance, providers::{Provider, Http}, middleware::SignerMiddleware, signers::{LocalWallet, Wallet, Signer}};
+    use ethers::{core::utils::Anvil, utils::AnvilInstance, providers::{Provider, Http}, middleware::SignerMiddleware, signers::{LocalWallet, Signer}, contract::ContractFactory};
+
+    use anvil_helpers::{
+        helpers::get_bytecode_from_forge_artifact,
+        multicall_2::multicall_2,
+    };
 
     fn setup() -> AnvilInstance {
         Anvil::new()
@@ -124,8 +129,21 @@ mod test {
         let client = SignerMiddleware::new(provider, wallet);
         let client = Arc::new(client);
 
+        let mut d = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        d.push("../anvil-helpers/contracts/anvil-helpers-contracts/out/Multicall2.sol/Multicall2.json");
+
+        let bytecode = get_bytecode_from_forge_artifact(d).unwrap();
+
+        let abi = multicall_2::MULTICALL2_ABI.clone();
+        let factory = ContractFactory::new(abi, bytecode, client.clone());
+
+        let mut contract_creation_tx = factory.deploy(()).unwrap();
+
+        contract_creation_tx.tx.set_gas(5_000_000);
+        let result = contract_creation_tx.send().await;
+
+
+        assert_eq!(result.is_ok(), true);
     }
-
-
 
 }
