@@ -8,6 +8,8 @@ pub mod providers {
     use tracker::tracker::{BlockProvider, Block, BlockIdentifier, FilterBlockOption, Filter};
     use tokio::time;
 
+    use anvil_helpers::multicall_2::multicall_2;
+
     #[derive(Clone, Debug)]
     pub struct HttpProvider {
         provider: Provider<Http>,
@@ -77,9 +79,10 @@ pub mod providers {
 #[cfg(test)]
 mod test {
 
-    use std::{time::Duration, sync::Arc, path::PathBuf};
+    use std::{time::Duration, sync::Arc, path::PathBuf, str::FromStr};
 
     use super::providers::HttpProvider;
+    use ethers_core::types::{U256, H160};
     use tracing::debug;
     use tracing_test::traced_test;
     use tracker::tracker::{BlockProvider, BlockIdentifier};
@@ -124,7 +127,9 @@ mod test {
         let mut wallet: LocalWallet = anvil.keys()[0].clone().into();
         wallet = wallet.with_chain_id(anvil.chain_id());
 
-        let provider = Provider::<Http>::try_from(anvil.endpoint()).unwrap().interval(Duration::from_millis(10u64));
+        // let provider = Provider::<Http>::try_from(anvil.endpoint()).unwrap().interval(Duration::from_millis(10u64));
+        let provider = Provider::<Http>::try_from("http://127.0.0.1:8545").unwrap().interval(Duration::from_millis(10u64));
+
 
         let client = SignerMiddleware::new(provider, wallet);
         let client = Arc::new(client);
@@ -139,11 +144,18 @@ mod test {
 
         let mut contract_creation_tx = factory.deploy(()).unwrap();
 
-        contract_creation_tx.tx.set_gas(5_000_000);
+        contract_creation_tx.tx.set_gas(1_000_000);
         let result = contract_creation_tx.send().await;
 
-
         assert_eq!(result.is_ok(), true);
+
+        let instance = result.unwrap();
+
+        let contract = multicall_2::Multicall2::new(instance.address() ,client);
+
+        let bo = contract.get_block_number().await;
+
+        bo.unwrap();
     }
 
 }
