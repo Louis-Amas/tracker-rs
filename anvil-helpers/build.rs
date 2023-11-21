@@ -33,7 +33,6 @@ fn generate_abi_file_from_forge_artifact(
 fn main() {
     println!("Build script is running!");
 
-    // Call your Rust function here
     generate_abi_file_from_forge_artifact(
         "./contracts/anvil-helpers-contracts/out/Multicall2.sol/Multicall2.json".into(), 
         "./src/".into(), 

@@ -4,31 +4,33 @@ pub mod providers {
 
     use async_trait::async_trait;
     use ethers::types::{Log, TxHash};
+    use ethers_core::types::{U64, H256};
     use ethers_providers::{Http, Middleware, Provider};
     use tokio::time;
     use tracker::tracker::{Block, BlockIdentifier, BlockProvider, Filter, FilterBlockOption};
 
-    use anvil_helpers::multicall_2::multicall_2;
+    use anvil_helpers::multicall_2::{multicall_2, Call};
 
     #[derive(Clone, Debug)]
     pub struct HttpProvider {
         provider: Provider<Http>,
         retries: u32,
         retry_delay_ms: u64,
-        // multicall2: multicall_2::Multicall2<u32>,
+        multicall2: multicall_2::Multicall2<Provider<Http>>,
     }
 
     impl HttpProvider {
         pub fn new(
             url: String,
             retries: u32,
-            retry_delay_ms: u64, /*, multicall2: multicall_2::Multicall2<u32>*/
+            retry_delay_ms: u64,
+        multicall2: multicall_2::Multicall2<Provider<Http>>
         ) -> Self {
             HttpProvider {
                 provider: Provider::<Http>::try_from(url).unwrap(),
                 retries,
                 retry_delay_ms,
-                // multicall2,
+                multicall2,
             }
         }
     }
@@ -74,7 +76,38 @@ pub mod providers {
             from: u64,
             to: u64,
         ) -> Result<Vec<Block<TxHash>>, String> {
-            Err("".to_string())
+            let mut calls = Vec::new();
+
+            for block_number in (from - 1)..(to + 1) {
+                let call_data = self.multicall2.encode("getBlockHash", block_number).unwrap();
+
+                calls.push(Call {
+                    target: self.multicall2.address(),
+                    call_data,
+                });
+            }
+
+            let calls_results = self.multicall2.try_aggregate(true,calls).call().await;
+
+            let blocks_encoded = calls_results.map_err(|err| err.to_string())?; 
+            let mut blocks = Vec::new();
+
+            let mut last_hash = H256::zero();
+            for (index, block) in blocks_encoded.into_iter().enumerate() {
+                let hash = self.multicall2.decode_output("getBlockHash", block.return_data).unwrap();
+                blocks.push(Block {
+                    number: U64([from + index as u64; 1]),
+                    hash,
+                    parent_hash: last_hash,
+                    transactions: Vec::new() as Vec<TxHash>,
+                    nonce: None,
+                    logs_bloom: None,
+                });
+
+                last_hash = hash
+            }
+
+            Ok(blocks)
         }
 
         async fn get_logs(
@@ -103,6 +136,7 @@ mod test {
     };
 
     use tokio::time::sleep;
+    use tracing::{event, debug};
     use tracing_test::traced_test;
     use tracker::tracker::{BlockIdentifier, BlockProvider};
 
@@ -154,12 +188,21 @@ mod test {
 
     #[traced_test]
     #[tokio::test]
+    async fn test_deploy_multicall2() {
+        let (anvil, multicall2) = setup_anvil().await;
+
+        let bn = multicall2.get_block_number().await;
+        assert_eq!(bn.unwrap().as_u32(), 1)
+    }
+
+    #[traced_test]
+    #[tokio::test]
     async fn test() {
         let (anvil, multicall2) = setup_anvil().await;
 
         let http_url = format!("http://127.0.0.1:{}", anvil.port());
 
-        let http_provider = HttpProvider::new(http_url, 5, 200);
+        let http_provider = HttpProvider::new(http_url, 5, 200, multicall2);
         let block = http_provider
             .get_block(&BlockIdentifier::Latest)
             .await
@@ -178,10 +221,28 @@ mod test {
 
     #[traced_test]
     #[tokio::test]
-    async fn test_deploy_multicall2() {
+    async fn test_get_block_batch() {
         let (anvil, multicall2) = setup_anvil().await;
 
-        let bn = multicall2.get_block_number().await;
-        assert_eq!(bn.unwrap().as_u32(), 1)
+        let http_url = format!("http://127.0.0.1:{}", anvil.port());
+
+        let http_provider = HttpProvider::new(http_url, 5, 200, multicall2);
+        let block = http_provider
+            .get_block(&BlockIdentifier::Latest)
+            .await
+            .unwrap();
+
+        assert_eq!(block.number.as_u64(), 1);
+
+        sleep(Duration::from_secs(2)).await;
+
+        let blocks = http_provider
+            .get_minimal_block_batch(1, 3)
+            .await
+            .unwrap();
+
+   
+        debug!("{:#?} success", blocks);
     }
+
 }
