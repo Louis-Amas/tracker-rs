@@ -4,7 +4,7 @@ pub mod providers {
 
     use async_trait::async_trait;
     use ethers::types::{Log, TxHash};
-    use ethers_core::types::{U64, H256};
+    use ethers_core::types::{H256, U64};
     use ethers_providers::{Http, Middleware, Provider};
     use tokio::time;
     use tracker::tracker::{Block, BlockIdentifier, BlockProvider, Filter, FilterBlockOption};
@@ -24,7 +24,7 @@ pub mod providers {
             url: String,
             retries: u32,
             retry_delay_ms: u64,
-        multicall2: multicall_2::Multicall2<Provider<Http>>
+            multicall2: multicall_2::Multicall2<Provider<Http>>,
         ) -> Self {
             HttpProvider {
                 provider: Provider::<Http>::try_from(url).unwrap(),
@@ -79,7 +79,10 @@ pub mod providers {
             let mut calls = Vec::new();
 
             for block_number in (from - 1)..(to + 1) {
-                let call_data = self.multicall2.encode("getBlockHash", block_number).unwrap();
+                let call_data = self
+                    .multicall2
+                    .encode("getBlockHash", block_number)
+                    .unwrap();
 
                 calls.push(Call {
                     target: self.multicall2.address(),
@@ -87,14 +90,23 @@ pub mod providers {
                 });
             }
 
-            let calls_results = self.multicall2.try_aggregate(true,calls).call().await;
+            let calls_results = self.multicall2.try_aggregate(true, calls).call().await;
 
-            let blocks_encoded = calls_results.map_err(|err| err.to_string())?; 
+            let blocks_encoded = calls_results.map_err(|err| err.to_string())?;
+
+            let blocks_len = blocks_encoded.len();
             let mut blocks = Vec::new();
 
             let mut last_hash = H256::zero();
             for (index, block) in blocks_encoded.into_iter().enumerate() {
-                let hash = self.multicall2.decode_output("getBlockHash", block.return_data).unwrap();
+                let hash = self
+                    .multicall2
+                    .decode_output("getBlockHash", block.return_data)
+                    .unwrap();
+
+                if index == blocks_len - 1 {
+                    break;
+                }
                 blocks.push(Block {
                     number: U64([from + index as u64; 1]),
                     hash,
@@ -132,11 +144,12 @@ mod test {
         middleware::SignerMiddleware,
         providers::{Http, Provider},
         signers::{LocalWallet, Signer},
+        types::H256,
         utils::AnvilInstance,
     };
 
     use tokio::time::sleep;
-    use tracing::{event, debug};
+    use tracing::{debug, event};
     use tracing_test::traced_test;
     use tracker::tracker::{BlockIdentifier, BlockProvider};
 
@@ -236,13 +249,19 @@ mod test {
 
         sleep(Duration::from_secs(2)).await;
 
-        let blocks = http_provider
-            .get_minimal_block_batch(1, 3)
-            .await
-            .unwrap();
+        let blocks = http_provider.get_minimal_block_batch(1, 3).await.unwrap();
 
-   
         debug!("{:#?} success", blocks);
-    }
 
+        let mut hash = H256::zero();
+        let mut number = 1;
+        for block in blocks {
+            assert_eq!(block.parent_hash == hash, true);
+            assert_eq!(block.number.as_u64() == number, true);
+            number = number + 1;
+            hash = block.hash;
+        }
+
+        assert_eq!(number - 1, 3);
+    }
 }
